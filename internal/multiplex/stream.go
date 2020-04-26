@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"reflect"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -79,6 +80,7 @@ func (s *Stream) Read(buf []byte) (n int, err error) {
 		return 0, nil
 	}
 
+	log.Trace("Stream.Read")
 	n, err = s.recvBuf.Read(buf)
 	log.Tracef("%v read from stream %v with err %v", n, s.id, err)
 	if err == io.EOF {
@@ -89,6 +91,7 @@ func (s *Stream) Read(buf []byte) (n int, err error) {
 
 func (s *Stream) WriteTo(w io.Writer) (int64, error) {
 	// will keep writing until the underlying buffer is closed
+	log.Tracef("%p Stream.WriteTo %s", s, reflect.Indirect(reflect.ValueOf(w)).Type())
 	n, err := s.recvBuf.WriteTo(w)
 	log.Tracef("%v read from stream %v with err %v", n, s.id, err)
 	if err == io.EOF {
@@ -99,11 +102,13 @@ func (s *Stream) WriteTo(w io.Writer) (int64, error) {
 
 func (s *Stream) sendFrame(f *Frame, framePayloadOffset int) error {
 	var cipherTextLen int
+	log.Tracef("About to obfuscate %v bytes for session %v seq %v", len(f.Payload), s.id, f.Seq)
 	cipherTextLen, err := s.session.Obfs(f, s.obfsBuf, framePayloadOffset)
 	if err != nil {
 		return err
 	}
 
+	log.Tracef("About to send %v bytes frame for session %v seq %v through switchboard", len(f.Payload), s.id, f.Seq)
 	_, err = s.session.sb.send(s.obfsBuf[:cipherTextLen], &s.assignedConnId)
 	log.Tracef("%v sent to remote through stream %v with err %v. seq: %v", len(f.Payload), s.id, err, f.Seq)
 	if err != nil {
@@ -118,7 +123,10 @@ func (s *Stream) sendFrame(f *Frame, framePayloadOffset int) error {
 
 // Write implements io.Write
 func (s *Stream) Write(in []byte) (n int, err error) {
+	log.Tracef("%p Stream.Write", s)
+	log.Tracef("%p Entering Stream writing lock.", s)
 	s.writingM.Lock()
+	defer log.Tracef("%p Exiting Stream writing lock.", s)
 	defer s.writingM.Unlock()
 	if s.isClosed() {
 		return 0, ErrBrokenStream
@@ -145,6 +153,7 @@ func (s *Stream) Write(in []byte) (n int, err error) {
 			Payload:  framePayload,
 		}
 		s.nextSendSeq++
+		log.Tracef("%p About to send frame.", s)
 		err = s.sendFrame(f, 0)
 		if err != nil {
 			return
@@ -155,10 +164,12 @@ func (s *Stream) Write(in []byte) (n int, err error) {
 }
 
 func (s *Stream) ReadFrom(r io.Reader) (n int64, err error) {
+	log.Tracef("%p Stream.ReadFrom %s", s, reflect.Indirect(reflect.ValueOf(r)).Type())
 	if s.obfsBuf == nil {
 		s.obfsBuf = make([]byte, s.session.SendBufferSize)
 	}
 	for {
+		log.Tracef("%p Stream.ReadFrom new loop cycle", s)
 		if s.rfTimeout != 0 {
 			if rder, ok := r.(net.Conn); !ok {
 				log.Warn("ReadFrom timeout is set but reader doesn't implement SetReadDeadline")
@@ -166,6 +177,7 @@ func (s *Stream) ReadFrom(r io.Reader) (n int64, err error) {
 				rder.SetReadDeadline(time.Now().Add(s.rfTimeout))
 			}
 		}
+		log.Tracef("%p Stream.ReadFrom about to read from reader.", s)
 		read, er := r.Read(s.obfsBuf[HEADER_LEN : HEADER_LEN+s.session.maxStreamUnitWrite])
 		if er != nil {
 			return n, er
@@ -174,6 +186,7 @@ func (s *Stream) ReadFrom(r io.Reader) (n int64, err error) {
 			return n, ErrBrokenStream
 		}
 
+		log.Tracef("%p Entering Stream writing lock.", s)
 		s.writingM.Lock()
 		f := &Frame{
 			StreamID: s.id,
@@ -183,6 +196,7 @@ func (s *Stream) ReadFrom(r io.Reader) (n int64, err error) {
 		}
 		s.nextSendSeq++
 		err = s.sendFrame(f, HEADER_LEN)
+		log.Tracef("%p Exiting Stream writing lock.", s)
 		s.writingM.Unlock()
 
 		if err != nil {

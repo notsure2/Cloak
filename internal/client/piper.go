@@ -131,10 +131,12 @@ func RouteTCP(listener net.Listener, streamTimeout time.Duration, newSeshFunc fu
 
 			stream.SetReadFromTimeout(streamTimeout) // if localConn hasn't sent anything to stream to a period of time, stream closes
 			go func() {
+				log.Tracef("Stream (remote) to connection copy goroutine started.")
 				if _, err := common.Copy(localConn, stream); err != nil {
 					log.Tracef("copying stream to proxy client: %v", err)
 				}
 			}()
+			log.Tracef("Connection to stream (remote) copy goroutine started.")
 			if _, err = common.Copy(stream, localConn); err != nil {
 				log.Tracef("copying proxy client to stream: %v", err)
 			}
