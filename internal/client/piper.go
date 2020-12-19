@@ -105,7 +105,7 @@ func RouteTCP(listener net.Listener, streamTimeout time.Duration, singleplex boo
 			var zeroTime time.Time
 			_ = localConn.SetReadDeadline(zeroTime)
 
-			stream, err := session.OpenStream()
+			stream, err := sesh.OpenStream()
 			if err != nil {
 				log.Errorf("Failed to open stream: %v", err)
 				localConn.Close()
@@ -131,6 +131,6 @@ func RouteTCP(listener net.Listener, streamTimeout time.Duration, singleplex boo
 			if _, err = common.Copy(stream, localConn); err != nil {
 				log.Tracef("copying proxy client to stream: %v", err)
 			}
-		}(multiplexSession, newSeshFunc, localConn, streamTimeout)
+		}(sesh, localConn, streamTimeout)
 	}
 }
