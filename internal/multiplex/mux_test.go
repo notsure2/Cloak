@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"github.com/cbeuw/Cloak/internal/common"
 	"github.com/cbeuw/connutil"
+	"github.com/stretchr/testify/assert"
 	"io"
 	"math/rand"
 	"net"
@@ -111,12 +112,14 @@ func TestMultiplex(t *testing.T) {
 
 	//test echo
 	runEchoTest(t, streams, maxMsgLen)
-	if clientSession.streamCount() != numStreams {
-		t.Errorf("client stream count is wrong: %v", clientSession.streamCount())
-	}
-	if serverSession.streamCount() != numStreams {
-		t.Errorf("server stream count is wrong: %v", serverSession.streamCount())
-	}
+
+	assert.Eventuallyf(t, func() bool {
+		return clientSession.streamCount() == numStreams
+	}, time.Second, 10*time.Millisecond, "client stream count is wrong: %v", clientSession.streamCount())
+
+	assert.Eventuallyf(t, func() bool {
+		return serverSession.streamCount() == numStreams
+	}, time.Second, 10*time.Millisecond, "server stream count is wrong: %v", serverSession.streamCount())
 
 	// close one stream
 	closing, streams := streams[0], streams[1:]
@@ -148,9 +151,12 @@ func TestMux_StreamClosing(t *testing.T) {
 		t.Errorf("can't write to stream: %v", err)
 	}
 
-	time.Sleep(500 * time.Millisecond)
+	_, err = io.ReadFull(toBeClosed, recvBuf[:1])
+	if err != nil {
+		t.Errorf("can't read anything before stream closed: %v", err)
+	}
 	_ = toBeClosed.Close()
-	_, err = io.ReadFull(toBeClosed, recvBuf)
+	_, err = io.ReadFull(toBeClosed, recvBuf[1:])
 	if err != nil {
 		t.Errorf("can't read residual data on stream: %v", err)
 	}
