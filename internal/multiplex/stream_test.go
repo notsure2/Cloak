@@ -151,19 +151,31 @@ func TestStream_Close(t *testing.T) {
 			t.Error("failed to accept stream", err)
 			return
 		}
+
+		// we read something to wait for the test frame to reach our recvBuffer.
+		// if it's empty by the point we call stream.Close(), the incoming
+		// frame will be dropped
+		readBuf := make([]byte, len(testPayload))
+		_, err = io.ReadFull(stream, readBuf[:1])
+		if err != nil {
+			t.Errorf("can't read any data before active closing")
+		}
+
 		err = stream.Close()
 		if err != nil {
 			t.Error("failed to actively close stream", err)
 			return
 		}
 
-		if sI, _ := sesh.streams.Load(stream.(*Stream).id); sI != nil {
+		sesh.streamsM.Lock()
+		if s, _ := sesh.streams[stream.(*Stream).id]; s != nil {
+			sesh.streamsM.Unlock()
 			t.Error("stream still exists")
 			return
 		}
+		sesh.streamsM.Unlock()
 
-		readBuf := make([]byte, len(testPayload))
-		_, err = io.ReadFull(stream, readBuf)
+		_, err = io.ReadFull(stream, readBuf[1:])
 		if err != nil {
 			t.Errorf("can't read residual data %v", err)
 		}
@@ -233,8 +245,10 @@ func TestStream_Close(t *testing.T) {
 		}
 
 		assert.Eventually(t, func() bool {
-			sI, _ := sesh.streams.Load(stream.(*Stream).id)
-			return sI == nil
+			sesh.streamsM.Lock()
+			s, _ := sesh.streams[stream.(*Stream).id]
+			sesh.streamsM.Unlock()
+			return s == nil
 		}, time.Second, 10*time.Millisecond, "streams still exists")
 
 	})

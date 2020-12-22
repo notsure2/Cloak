@@ -23,21 +23,20 @@ type Stream struct {
 
 	session *Session
 
+	allocIdempot sync.Once
 	// a buffer (implemented as an asynchronous buffered pipe) to put data we've received from recvFrame but hasn't
-	// been read by the consumer through Read or WriteTo
+	// been read by the consumer through Read or WriteTo. Lazily allocated
 	recvBuf recvBuffer
 
-	writingM    sync.Mutex
-	nextSendSeq uint64
+	writingM     sync.Mutex
+	writingFrame Frame // we do the allocation here to save repeated allocations in Write and ReadFrom
 
 	// atomic
 	closed uint32
 
-	// lazy allocation for obfsBuf. This is desirable because obfsBuf is only used when data is sent from
+	// obfuscation happens in obfsBuf. This buffer is lazily allocated as obfsBuf is only used when data is sent from
 	// the stream (through Write or ReadFrom). Some streams never send data so eager allocation will waste
 	// memory
-	allocIdempot sync.Once
-	// obfuscation happens in this buffer
 	obfsBuf []byte
 
 	// When we want order guarantee (i.e. session.Unordered is false),
@@ -52,17 +51,14 @@ type Stream struct {
 }
 
 func makeStream(sesh *Session, id uint32) *Stream {
-	var recvBuf recvBuffer
-	if sesh.Unordered {
-		recvBuf = NewDatagramBufferedPipe()
-	} else {
-		recvBuf = NewStreamBuffer()
-	}
-
 	stream := &Stream{
 		id:      id,
 		session: sesh,
-		recvBuf: recvBuf,
+		writingFrame: Frame{
+			StreamID: id,
+			Seq:      0,
+			Closing:  closingNothing,
+		},
 	}
 
 	return stream
@@ -70,9 +66,20 @@ func makeStream(sesh *Session, id uint32) *Stream {
 
 func (s *Stream) isClosed() bool { return atomic.LoadUint32(&s.closed) == 1 }
 
+func (s *Stream) getRecvBuf() recvBuffer {
+	s.allocIdempot.Do(func() {
+		if s.session.Unordered {
+			s.recvBuf = NewDatagramBufferedPipe()
+		} else {
+			s.recvBuf = NewStreamBuffer()
+		}
+	})
+	return s.recvBuf
+}
+
 // receive a readily deobfuscated Frame so its payload can later be Read
-func (s *Stream) recvFrame(frame Frame) error {
-	toBeClosed, err := s.recvBuf.Write(frame)
+func (s *Stream) recvFrame(frame *Frame) error {
+	toBeClosed, err := s.getRecvBuf().Write(frame)
 	if toBeClosed {
 		err = s.passiveClose()
 		if errors.Is(err, errRepeatStreamClosing) {
@@ -91,7 +98,7 @@ func (s *Stream) Read(buf []byte) (n int, err error) {
 		return 0, nil
 	}
 
-	n, err = s.recvBuf.Read(buf)
+	n, err = s.getRecvBuf().Read(buf)
 	log.Tracef("%v read from stream %v with err %v", n, s.id, err)
 	if err == io.EOF {
 		return n, ErrBrokenStream
@@ -102,7 +109,7 @@ func (s *Stream) Read(buf []byte) (n int, err error) {
 // WriteTo continuously write data Stream has received into the writer w.
 func (s *Stream) WriteTo(w io.Writer) (int64, error) {
 	// will keep writing until the underlying buffer is closed
-	n, err := s.recvBuf.WriteTo(w)
+	n, err := s.getRecvBuf().WriteTo(w)
 	log.Tracef("%v read from stream %v with err %v", n, s.id, err)
 	if err == io.EOF {
 		return n, ErrBrokenStream
@@ -110,15 +117,14 @@ func (s *Stream) WriteTo(w io.Writer) (int64, error) {
 	return n, nil
 }
 
-func (s *Stream) obfuscateAndSend(f *Frame, payloadOffsetInObfsBuf int) error {
+func (s *Stream) obfuscateAndSend(payloadOffsetInObfsBuf int) error {
 	var cipherTextLen int
-	cipherTextLen, err := s.session.Obfs(f, s.obfsBuf, payloadOffsetInObfsBuf)
+	cipherTextLen, err := s.session.Obfs(&s.writingFrame, s.obfsBuf, payloadOffsetInObfsBuf)
 	if err != nil {
 		return err
 	}
 
 	_, err = s.session.sb.send(s.obfsBuf[:cipherTextLen], &s.assignedConnId)
-	log.Tracef("%v sent to remote through stream %v with err %v. seq: %v", len(f.Payload), s.id, err, f.Seq)
 	if err != nil {
 		if err == errBrokenSwitchboard {
 			s.session.SetTerminalMsg(err.Error())
@@ -154,14 +160,9 @@ func (s *Stream) Write(in []byte) (n int, err error) {
 			}
 			framePayload = in[n : s.session.maxStreamUnitWrite+n]
 		}
-		f := &Frame{
-			StreamID: s.id,
-			Seq:      s.nextSendSeq,
-			Closing:  closingNothing,
-			Payload:  framePayload,
-		}
-		s.nextSendSeq++
-		err = s.obfuscateAndSend(f, 0)
+		s.writingFrame.Payload = framePayload
+		err = s.obfuscateAndSend(0)
+		s.writingFrame.Seq++
 		if err != nil {
 			return
 		}
@@ -193,14 +194,9 @@ func (s *Stream) ReadFrom(r io.Reader) (n int64, err error) {
 		}
 
 		s.writingM.Lock()
-		f := &Frame{
-			StreamID: s.id,
-			Seq:      s.nextSendSeq,
-			Closing:  closingNothing,
-			Payload:  s.obfsBuf[frameHeaderLength : frameHeaderLength+read],
-		}
-		s.nextSendSeq++
-		err = s.obfuscateAndSend(f, frameHeaderLength)
+		s.writingFrame.Payload = s.obfsBuf[frameHeaderLength : frameHeaderLength+read]
+		err = s.obfuscateAndSend(frameHeaderLength)
+		s.writingFrame.Seq++
 		s.writingM.Unlock()
 
 		if err != nil {
@@ -225,8 +221,8 @@ func (s *Stream) Close() error {
 func (s *Stream) LocalAddr() net.Addr  { return s.session.addrs.Load().([]net.Addr)[0] }
 func (s *Stream) RemoteAddr() net.Addr { return s.session.addrs.Load().([]net.Addr)[1] }
 
-func (s *Stream) SetWriteToTimeout(d time.Duration)  { s.recvBuf.SetWriteToTimeout(d) }
-func (s *Stream) SetReadDeadline(t time.Time) error  { s.recvBuf.SetReadDeadline(t); return nil }
+func (s *Stream) SetWriteToTimeout(d time.Duration)  { s.getRecvBuf().SetWriteToTimeout(d) }
+func (s *Stream) SetReadDeadline(t time.Time) error  { s.getRecvBuf().SetReadDeadline(t); return nil }
 func (s *Stream) SetReadFromTimeout(d time.Duration) { s.readFromTimeout = d }
 
 var errNotImplemented = errors.New("Not implemented")
