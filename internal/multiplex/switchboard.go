@@ -7,6 +7,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 const (
@@ -31,6 +32,7 @@ type switchboard struct {
 	conns      sync.Map
 	numConns   uint32
 	nextConnId uint32
+	randPool   sync.Pool
 
 	broken uint32
 }
@@ -48,6 +50,9 @@ func makeSwitchboard(sesh *Session) *switchboard {
 		strategy:   strategy,
 		valve:      sesh.Valve,
 		nextConnId: 1,
+		randPool: sync.Pool{New: func() interface{} {
+			return rand.New(rand.NewSource(int64(time.Now().Nanosecond())))
+		}},
 	}
 	return sb
 }
@@ -67,45 +72,43 @@ func (sb *switchboard) addConn(conn net.Conn) {
 
 // a pointer to connId is passed here so that the switchboard can reassign it if that connId isn't usable
 func (sb *switchboard) send(data []byte, connId *uint32) (n int, err error) {
-	writeAndRegUsage := func(conn net.Conn, d []byte) (int, error) {
-		n, err = conn.Write(d)
-		if err != nil {
-			sb.conns.Delete(*connId)
-			sb.close("failed to write to remote " + err.Error())
-			return n, err
-		}
-		sb.valve.AddTx(int64(n))
-		return n, nil
-	}
-
 	sb.valve.txWait(len(data))
 	if atomic.LoadUint32(&sb.broken) == 1 || sb.connsCount() == 0 {
 		return 0, errBrokenSwitchboard
 	}
 
+	var conn net.Conn
 	switch sb.strategy {
 	case UNIFORM_SPREAD:
-		_, conn, err := sb.pickRandConn()
+		_, conn, err = sb.pickRandConn()
 		if err != nil {
 			return 0, errBrokenSwitchboard
 		}
-		return writeAndRegUsage(conn, data)
 	case FIXED_CONN_MAPPING:
 		connI, ok := sb.conns.Load(*connId)
 		if ok {
-			conn := connI.(net.Conn)
-			return writeAndRegUsage(conn, data)
+			conn = connI.(net.Conn)
 		} else {
-			newConnId, conn, err := sb.pickRandConn()
+			var newConnId uint32
+			newConnId, conn, err = sb.pickRandConn()
 			if err != nil {
 				return 0, errBrokenSwitchboard
 			}
 			*connId = newConnId
-			return writeAndRegUsage(conn, data)
 		}
 	default:
 		return 0, errors.New("unsupported traffic distribution strategy")
 	}
+
+	n, err = conn.Write(data)
+	if err != nil {
+		sb.conns.Delete(*connId)
+		sb.session.SetTerminalMsg("failed to write to remote " + err.Error())
+		sb.session.passiveClose()
+		return n, err
+	}
+	sb.valve.AddTx(int64(n))
+	return n, nil
 }
 
 // returns a random connId
@@ -120,7 +123,9 @@ func (sb *switchboard) pickRandConn() (uint32, net.Conn, error) {
 	// so if the r > len(sb.conns) at the point of range call, the last visited element is picked
 	var id uint32
 	var conn net.Conn
-	r := rand.Intn(connCount)
+	randReader := sb.randPool.Get().(*rand.Rand)
+	r := randReader.Intn(connCount)
+	sb.randPool.Put(randReader)
 	var c int
 	sb.conns.Range(func(connIdI, connI interface{}) bool {
 		if r == c {
@@ -138,16 +143,11 @@ func (sb *switchboard) pickRandConn() (uint32, net.Conn, error) {
 	return id, conn, nil
 }
 
-func (sb *switchboard) close(terminalMsg string) {
-	atomic.StoreUint32(&sb.broken, 1)
-	if !sb.session.IsClosed() {
-		sb.session.SetTerminalMsg(terminalMsg)
-		sb.session.passiveClose()
-	}
-}
-
 // actively triggered by session.Close()
 func (sb *switchboard) closeAll() {
+	if !atomic.CompareAndSwapUint32(&sb.broken, 0, 1) {
+		return
+	}
 	sb.conns.Range(func(key, connI interface{}) bool {
 		conn := connI.(net.Conn)
 		conn.Close()
@@ -168,7 +168,8 @@ func (sb *switchboard) deplex(connId uint32, conn net.Conn) {
 			log.Debugf("a connection for session %v has closed: %v", sb.session.id, err)
 			sb.conns.Delete(connId)
 			atomic.AddUint32(&sb.numConns, ^uint32(0))
-			sb.close("a connection has dropped unexpectedly")
+			sb.session.SetTerminalMsg("a connection has dropped unexpectedly")
+			sb.session.passiveClose()
 			return
 		}
 

@@ -39,7 +39,8 @@ func BenchmarkStream_Write_Ordered(b *testing.B) {
 	eMethods := map[string]byte{
 		"plain":             EncryptionMethodPlain,
 		"chacha20-poly1305": EncryptionMethodChaha20Poly1305,
-		"aes-gcm":           EncryptionMethodAESGCM,
+		"aes-256-gcm":       EncryptionMethodAES256GCM,
+		"aes-128-gcm":       EncryptionMethodAES128GCM,
 	}
 
 	for name, method := range eMethods {
@@ -141,7 +142,7 @@ func TestStream_Close(t *testing.T) {
 		writingEnd := common.NewTLSConn(rawWritingEnd)
 
 		obfsBuf := make([]byte, 512)
-		i, _ := sesh.Obfs(dataFrame, obfsBuf, 0)
+		i, _ := sesh.obfuscate(dataFrame, obfsBuf, 0)
 		_, err := writingEnd.Write(obfsBuf[:i])
 		if err != nil {
 			t.Error("failed to write from remote end")
@@ -151,16 +152,7 @@ func TestStream_Close(t *testing.T) {
 			t.Error("failed to accept stream", err)
 			return
 		}
-
-		// we read something to wait for the test frame to reach our recvBuffer.
-		// if it's empty by the point we call stream.Close(), the incoming
-		// frame will be dropped
-		readBuf := make([]byte, len(testPayload))
-		_, err = io.ReadFull(stream, readBuf[:1])
-		if err != nil {
-			t.Errorf("can't read any data before active closing")
-		}
-
+		time.Sleep(500 * time.Millisecond)
 		err = stream.Close()
 		if err != nil {
 			t.Error("failed to actively close stream", err)
@@ -175,10 +167,12 @@ func TestStream_Close(t *testing.T) {
 		}
 		sesh.streamsM.Unlock()
 
-		_, err = io.ReadFull(stream, readBuf[1:])
+		readBuf := make([]byte, len(testPayload))
+		_, err = io.ReadFull(stream, readBuf)
 		if err != nil {
-			t.Errorf("can't read residual data %v", err)
+			t.Errorf("cannot read resiual data: %v", err)
 		}
+
 		if !bytes.Equal(readBuf, testPayload) {
 			t.Errorf("read wrong data")
 		}
@@ -191,7 +185,7 @@ func TestStream_Close(t *testing.T) {
 		writingEnd := common.NewTLSConn(rawWritingEnd)
 
 		obfsBuf := make([]byte, 512)
-		i, err := sesh.Obfs(dataFrame, obfsBuf, 0)
+		i, err := sesh.obfuscate(dataFrame, obfsBuf, 0)
 		if err != nil {
 			t.Errorf("failed to obfuscate frame %v", err)
 		}
@@ -213,7 +207,7 @@ func TestStream_Close(t *testing.T) {
 			testPayload,
 		}
 
-		i, err = sesh.Obfs(closingFrame, obfsBuf, 0)
+		i, err = sesh.obfuscate(closingFrame, obfsBuf, 0)
 		if err != nil {
 			t.Errorf("failed to obfuscate frame %v", err)
 		}
@@ -229,7 +223,7 @@ func TestStream_Close(t *testing.T) {
 			testPayload,
 		}
 
-		i, err = sesh.Obfs(closingFrameDup, obfsBuf, 0)
+		i, err = sesh.obfuscate(closingFrameDup, obfsBuf, 0)
 		if err != nil {
 			t.Errorf("failed to obfuscate frame %v", err)
 		}
@@ -270,9 +264,6 @@ func TestStream_Read(t *testing.T) {
 	}
 
 	var streamID uint32
-	buf := make([]byte, 10)
-
-	obfsBuf := make([]byte, 512)
 
 	for name, unordered := range seshes {
 		sesh := setupSesh(unordered, emptyKey, EncryptionMethodPlain)
@@ -280,9 +271,11 @@ func TestStream_Read(t *testing.T) {
 		sesh.AddConnection(common.NewTLSConn(rawConn))
 		writingEnd := common.NewTLSConn(rawWritingEnd)
 		t.Run(name, func(t *testing.T) {
+			buf := make([]byte, 10)
+			obfsBuf := make([]byte, 512)
 			t.Run("Plain read", func(t *testing.T) {
 				f.StreamID = streamID
-				i, _ := sesh.Obfs(f, obfsBuf, 0)
+				i, _ := sesh.obfuscate(f, obfsBuf, 0)
 				streamID++
 				writingEnd.Write(obfsBuf[:i])
 				stream, err := sesh.Accept()
@@ -307,7 +300,7 @@ func TestStream_Read(t *testing.T) {
 			})
 			t.Run("Nil buf", func(t *testing.T) {
 				f.StreamID = streamID
-				i, _ := sesh.Obfs(f, obfsBuf, 0)
+				i, _ := sesh.obfuscate(f, obfsBuf, 0)
 				streamID++
 				writingEnd.Write(obfsBuf[:i])
 				stream, _ := sesh.Accept()
@@ -319,21 +312,22 @@ func TestStream_Read(t *testing.T) {
 			})
 			t.Run("Read after stream close", func(t *testing.T) {
 				f.StreamID = streamID
-				i, _ := sesh.Obfs(f, obfsBuf, 0)
+				i, _ := sesh.obfuscate(f, obfsBuf, 0)
 				streamID++
 				writingEnd.Write(obfsBuf[:i])
 				stream, _ := sesh.Accept()
+
+				time.Sleep(500 * time.Millisecond)
+
 				stream.Close()
-				i, err := stream.Read(buf)
+
+				_, err := io.ReadFull(stream, buf[:smallPayloadLen])
 				if err != nil {
-					t.Error("failed to read", err)
+					t.Errorf("cannot read residual data: %v", err)
 				}
-				if i != smallPayloadLen {
-					t.Errorf("expected read %v, got %v", smallPayloadLen, i)
-				}
-				if !bytes.Equal(buf[:i], testPayload) {
+				if !bytes.Equal(buf[:smallPayloadLen], testPayload) {
 					t.Error("expected", testPayload,
-						"got", buf[:i])
+						"got", buf[:smallPayloadLen])
 				}
 				_, err = stream.Read(buf)
 				if err == nil {
@@ -343,21 +337,21 @@ func TestStream_Read(t *testing.T) {
 			})
 			t.Run("Read after session close", func(t *testing.T) {
 				f.StreamID = streamID
-				i, _ := sesh.Obfs(f, obfsBuf, 0)
+				i, _ := sesh.obfuscate(f, obfsBuf, 0)
 				streamID++
 				writingEnd.Write(obfsBuf[:i])
 				stream, _ := sesh.Accept()
+
+				time.Sleep(500 * time.Millisecond)
+
 				sesh.Close()
-				i, err := stream.Read(buf)
+				_, err := io.ReadFull(stream, buf[:smallPayloadLen])
 				if err != nil {
-					t.Error("failed to read", err)
+					t.Errorf("cannot read resiual data: %v", err)
 				}
-				if i != smallPayloadLen {
-					t.Errorf("expected read %v, got %v", smallPayloadLen, i)
-				}
-				if !bytes.Equal(buf[:i], testPayload) {
+				if !bytes.Equal(buf[:smallPayloadLen], testPayload) {
 					t.Error("expected", testPayload,
-						"got", buf[:i])
+						"got", buf[:smallPayloadLen])
 				}
 				_, err = stream.Read(buf)
 				if err == nil {

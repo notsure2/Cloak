@@ -30,15 +30,14 @@ func serveTCPEcho(l net.Listener) {
 			log.Error(err)
 			return
 		}
-		go func() {
-			conn := conn
+		go func(conn net.Conn) {
 			_, err := io.Copy(conn, conn)
 			if err != nil {
 				conn.Close()
 				log.Error(err)
 				return
 			}
-		}()
+		}(conn)
 	}
 }
 
@@ -50,8 +49,7 @@ func serveUDPEcho(listener *connutil.PipeListener) {
 			return
 		}
 		const bufSize = 32 * 1024
-		go func() {
-			conn := conn
+		go func(conn net.PacketConn) {
 			defer conn.Close()
 			buf := make([]byte, bufSize)
 			for {
@@ -70,7 +68,7 @@ func serveUDPEcho(listener *connutil.PipeListener) {
 					return
 				}
 			}
-		}()
+		}(conn)
 	}
 }
 
@@ -222,30 +220,34 @@ func establishSession(lcc client.LocalConnConfig, rcc client.RemoteConnConfig, a
 	return proxyToCkClientD, proxyFromCkServerL, netToCkServerD, redirFromCkServerL, nil
 }
 
-func runEchoTest(t *testing.T, conns []net.Conn, maxMsgLen int) {
+func runEchoTest(t *testing.T, conns []net.Conn, msgLen int) {
 	var wg sync.WaitGroup
+	testData := make([]byte, msgLen)
+	rand.Read(testData)
+
 	for _, conn := range conns {
 		wg.Add(1)
 		go func(conn net.Conn) {
-			testDataLen := rand.Intn(maxMsgLen)
-			testData := make([]byte, testDataLen)
-			rand.Read(testData)
+			defer wg.Done()
 
+			// we cannot call t.Fatalf in concurrent contexts
 			n, err := conn.Write(testData)
-			if n != testDataLen {
-				t.Fatalf("written only %v, err %v", n, err)
+			if n != msgLen {
+				t.Errorf("written only %v, err %v", n, err)
+				return
 			}
 
-			recvBuf := make([]byte, testDataLen)
+			recvBuf := make([]byte, msgLen)
 			_, err = io.ReadFull(conn, recvBuf)
 			if err != nil {
-				t.Fatalf("failed to read back: %v", err)
+				t.Errorf("failed to read back: %v", err)
+				return
 			}
 
 			if !bytes.Equal(testData, recvBuf) {
-				t.Fatalf("echoed data not correct")
+				t.Errorf("echoed data not correct")
+				return
 			}
-			wg.Done()
 		}(conn)
 	}
 	wg.Wait()
@@ -294,6 +296,7 @@ func TestUDP(t *testing.T) {
 		}
 	})
 
+	const echoMsgLen = 1024
 	t.Run("user echo", func(t *testing.T) {
 		go serveUDPEcho(proxyFromCkServerL)
 		var conn [1]net.Conn
@@ -302,7 +305,7 @@ func TestUDP(t *testing.T) {
 			t.Error(err)
 		}
 
-		runEchoTest(t, conn[:], 1024)
+		runEchoTest(t, conn[:], echoMsgLen)
 	})
 
 }
@@ -317,13 +320,14 @@ func TestTCPSingleplex(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	const echoMsgLen = 16384
 	go serveTCPEcho(proxyFromCkServerL)
 
 	proxyConn1, err := proxyToCkClientD.Dial("", "")
 	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
-	runEchoTest(t, []net.Conn{proxyConn1}, 65536)
+	runEchoTest(t, []net.Conn{proxyConn1}, echoMsgLen)
 	user, err := sta.Panel.GetUser(ai.UID[:])
 	if err != nil {
 		t.Fatalf("failed to fetch user: %v", err)
@@ -335,15 +339,15 @@ func TestTCPSingleplex(t *testing.T) {
 
 	proxyConn2, err := proxyToCkClientD.Dial("", "")
 	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
-	runEchoTest(t, []net.Conn{proxyConn2}, 65536)
+	runEchoTest(t, []net.Conn{proxyConn2}, echoMsgLen)
 	if user.NumSession() != 2 {
 		t.Error("no extra session were made on second connection establishment")
 	}
 
 	// Both conns should work
-	runEchoTest(t, []net.Conn{proxyConn1, proxyConn2}, 65536)
+	runEchoTest(t, []net.Conn{proxyConn1, proxyConn2}, echoMsgLen)
 
 	proxyConn1.Close()
 
@@ -352,17 +356,17 @@ func TestTCPSingleplex(t *testing.T) {
 	}, time.Second, 10*time.Millisecond, "first session was not closed on connection close")
 
 	// conn2 should still work
-	runEchoTest(t, []net.Conn{proxyConn2}, 65536)
+	runEchoTest(t, []net.Conn{proxyConn2}, echoMsgLen)
 
 	var conns [numConns]net.Conn
 	for i := 0; i < numConns; i++ {
 		conns[i], err = proxyToCkClientD.Dial("", "")
 		if err != nil {
-			t.Error(err)
+			t.Fatal(err)
 		}
 	}
 
-	runEchoTest(t, conns[:], 65536)
+	runEchoTest(t, conns[:], echoMsgLen)
 
 }
 
@@ -410,6 +414,7 @@ func TestTCPMultiplex(t *testing.T) {
 		}
 	})
 
+	const echoMsgLen = 16384
 	t.Run("user echo", func(t *testing.T) {
 		go serveTCPEcho(proxyFromCkServerL)
 		var conns [numConns]net.Conn
@@ -420,7 +425,7 @@ func TestTCPMultiplex(t *testing.T) {
 			}
 		}
 
-		runEchoTest(t, conns[:], 65536)
+		runEchoTest(t, conns[:], echoMsgLen)
 	})
 
 	t.Run("redir echo", func(t *testing.T) {
@@ -432,7 +437,7 @@ func TestTCPMultiplex(t *testing.T) {
 				t.Error(err)
 			}
 		}
-		runEchoTest(t, conns[:], 65536)
+		runEchoTest(t, conns[:], echoMsgLen)
 	})
 }
 
@@ -503,7 +508,7 @@ func TestClosingStreamsFromProxy(t *testing.T) {
 	}
 }
 
-func BenchmarkThroughput(b *testing.B) {
+func BenchmarkIntegration(b *testing.B) {
 	log.SetLevel(log.ErrorLevel)
 	worldState := common.WorldOfTime(time.Unix(10, 0))
 	lcc, rcc, ai := generateClientConfigs(basicTCPConfig, worldState)
@@ -513,7 +518,8 @@ func BenchmarkThroughput(b *testing.B) {
 	encryptionMethods := map[string]byte{
 		"plain":             mux.EncryptionMethodPlain,
 		"chacha20-poly1305": mux.EncryptionMethodChaha20Poly1305,
-		"aes-gcm":           mux.EncryptionMethodAESGCM,
+		"aes-256-gcm":       mux.EncryptionMethodAES256GCM,
+		"aes-128-gcm":       mux.EncryptionMethodAES128GCM,
 	}
 
 	for name, method := range encryptionMethods {
@@ -524,7 +530,7 @@ func BenchmarkThroughput(b *testing.B) {
 				b.Fatal(err)
 			}
 
-			b.Run("single stream", func(b *testing.B) {
+			b.Run("single stream bandwidth", func(b *testing.B) {
 				more := make(chan int, 10)
 				go func() {
 					// sender
@@ -545,6 +551,19 @@ func BenchmarkThroughput(b *testing.B) {
 					io.ReadFull(clientConn, readBuf)
 					// ask for more
 					more <- 0
+				}
+			})
+
+			b.Run("single stream latency", func(b *testing.B) {
+				clientConn, _ := proxyToCkClientD.Dial("", "")
+				buf := []byte{1}
+				clientConn.Write(buf)
+				serverConn, _ := proxyFromCkServerL.Accept()
+				serverConn.Read(buf)
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					clientConn.Write(buf)
+					serverConn.Read(buf)
 				}
 			})
 

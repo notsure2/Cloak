@@ -19,13 +19,13 @@ func serveEcho(l net.Listener) {
 			// TODO: pass the error back
 			return
 		}
-		go func() {
+		go func(conn net.Conn) {
 			_, err := io.Copy(conn, conn)
 			if err != nil {
 				// TODO: pass the error back
 				return
 			}
-		}()
+		}(conn)
 	}
 }
 
@@ -65,27 +65,32 @@ func makeSessionPair(numConn int) (*Session, *Session, []*connPair) {
 
 func runEchoTest(t *testing.T, conns []net.Conn, msgLen int) {
 	var wg sync.WaitGroup
+	testData := make([]byte, msgLen)
+	rand.Read(testData)
+
 	for _, conn := range conns {
 		wg.Add(1)
 		go func(conn net.Conn) {
-			testData := make([]byte, msgLen)
-			rand.Read(testData)
+			defer wg.Done()
 
+			// we cannot call t.Fatalf in concurrent contexts
 			n, err := conn.Write(testData)
 			if n != msgLen {
-				t.Fatalf("written only %v, err %v", n, err)
+				t.Errorf("written only %v, err %v", n, err)
+				return
 			}
 
 			recvBuf := make([]byte, msgLen)
 			_, err = io.ReadFull(conn, recvBuf)
 			if err != nil {
-				t.Fatalf("failed to read back: %v", err)
+				t.Errorf("failed to read back: %v", err)
+				return
 			}
 
 			if !bytes.Equal(testData, recvBuf) {
-				t.Fatalf("echoed data not correct")
+				t.Errorf("echoed data not correct")
+				return
 			}
-			wg.Done()
 		}(conn)
 	}
 	wg.Wait()

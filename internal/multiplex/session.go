@@ -66,18 +66,19 @@ type Session struct {
 
 	streamsM sync.Mutex
 	streams  map[uint32]*Stream
+	// For accepting new streams
+	acceptCh chan *Stream
 
 	// a pool of heap allocated frame objects so we don't have to allocate a new one each time we receive a frame
 	recvFramePool sync.Pool
+
+	streamObfsBufPool sync.Pool
 
 	// Switchboard manages all connections to remote
 	sb *switchboard
 
 	// Used for LocalAddr() and RemoteAddr() etc.
 	addrs atomic.Value
-
-	// For accepting new streams
-	acceptCh chan *Stream
 
 	closed uint32
 
@@ -116,6 +117,11 @@ func MakeSession(id uint32, config SessionConfig) *Session {
 	}
 	// todo: validation. this must be smaller than StreamSendBufferSize
 	sesh.maxStreamUnitWrite = sesh.MsgOnWireSizeLimit - frameHeaderLength - sesh.Obfuscator.maxOverhead
+
+	sesh.streamObfsBufPool = sync.Pool{New: func() interface{} {
+		b := make([]byte, sesh.StreamSendBufferSize)
+		return &b
+	}}
 
 	sesh.sb = makeSwitchboard(sesh)
 	time.AfterFunc(sesh.InactivityTimeout, sesh.checkTimeout)
@@ -174,26 +180,26 @@ func (sesh *Session) Accept() (net.Conn, error) {
 }
 
 func (sesh *Session) closeStream(s *Stream, active bool) error {
-	// must be holding s.wirtingM on entry
-	if atomic.SwapUint32(&s.closed, 1) == 1 {
+	if !atomic.CompareAndSwapUint32(&s.closed, 0, 1) {
 		return fmt.Errorf("closing stream %v: %w", s.id, errRepeatStreamClosing)
 	}
 	_ = s.getRecvBuf().Close() // recvBuf.Close should not return error
 
 	if active {
+		tmpBuf := sesh.streamObfsBufPool.Get().(*[]byte)
+
 		// Notify remote that this stream is closed
-		padding := genRandomPadding()
+		common.CryptoRandRead((*tmpBuf)[:1])
+		padLen := int((*tmpBuf)[0]) + 1
+		payload := (*tmpBuf)[frameHeaderLength : padLen+frameHeaderLength]
+		common.CryptoRandRead(payload)
+
+		// must be holding s.wirtingM on entry
 		s.writingFrame.Closing = closingStream
-		s.writingFrame.Payload = padding
+		s.writingFrame.Payload = payload
 
-		obfsBuf := make([]byte, len(padding)+frameHeaderLength+sesh.Obfuscator.maxOverhead)
-
-		i, err := sesh.Obfs(&s.writingFrame, obfsBuf, 0)
-		s.writingFrame.Seq++
-		if err != nil {
-			return err
-		}
-		_, err = sesh.sb.send(obfsBuf[:i], &s.assignedConnId)
+		err := s.obfuscateAndSend(*tmpBuf, frameHeaderLength)
+		sesh.streamObfsBufPool.Put(tmpBuf)
 		if err != nil {
 			return err
 		}
@@ -226,7 +232,7 @@ func (sesh *Session) recvDataFromRemote(data []byte) error {
 	frame := sesh.recvFramePool.Get().(*Frame)
 	defer sesh.recvFramePool.Put(frame)
 
-	err := sesh.Deobfs(frame, data)
+	err := sesh.deobfuscate(frame, data)
 	if err != nil {
 		return fmt.Errorf("Failed to decrypt a frame for session %v: %v", sesh.id, err)
 	}
@@ -237,6 +243,10 @@ func (sesh *Session) recvDataFromRemote(data []byte) error {
 	}
 
 	sesh.streamsM.Lock()
+	if sesh.IsClosed() {
+		sesh.streamsM.Unlock()
+		return ErrBrokenSession
+	}
 	existingStream, existing := sesh.streams[frame.StreamID]
 	if existing {
 		sesh.streamsM.Unlock()
@@ -248,10 +258,10 @@ func (sesh *Session) recvDataFromRemote(data []byte) error {
 	} else {
 		newStream := makeStream(sesh, frame.StreamID)
 		sesh.streams[frame.StreamID] = newStream
+		sesh.acceptCh <- newStream
 		sesh.streamsM.Unlock()
 		// new stream
 		sesh.streamCountIncr()
-		sesh.acceptCh <- newStream
 		return newStream.recvFrame(frame)
 	}
 }
@@ -269,14 +279,14 @@ func (sesh *Session) TerminalMsg() string {
 	}
 }
 
-func (sesh *Session) closeSession(closeSwitchboard bool) error {
-	if atomic.SwapUint32(&sesh.closed, 1) == 1 {
+func (sesh *Session) closeSession() error {
+	if !atomic.CompareAndSwapUint32(&sesh.closed, 0, 1) {
 		log.Debugf("session %v has already been closed", sesh.id)
 		return errRepeatSessionClosing
 	}
-	sesh.acceptCh <- nil
 
 	sesh.streamsM.Lock()
+	close(sesh.acceptCh)
 	for id, stream := range sesh.streams {
 		if stream == nil {
 			continue
@@ -287,55 +297,48 @@ func (sesh *Session) closeSession(closeSwitchboard bool) error {
 		sesh.streamCountDecr()
 	}
 	sesh.streamsM.Unlock()
-
-	if closeSwitchboard {
-		sesh.sb.closeAll()
-	}
 	return nil
 }
 
 func (sesh *Session) passiveClose() error {
 	log.Debugf("attempting to passively close session %v", sesh.id)
-	err := sesh.closeSession(true)
+	err := sesh.closeSession()
 	if err != nil {
 		return err
 	}
+	sesh.sb.closeAll()
 	log.Debugf("session %v closed gracefully", sesh.id)
 	return nil
 }
 
-func genRandomPadding() []byte {
-	lenB := make([]byte, 1)
-	common.CryptoRandRead(lenB)
-	pad := make([]byte, int(lenB[0])+1)
-	common.CryptoRandRead(pad)
-	return pad
-}
-
 func (sesh *Session) Close() error {
 	log.Debugf("attempting to actively close session %v", sesh.id)
-	err := sesh.closeSession(false)
+	err := sesh.closeSession()
 	if err != nil {
 		return err
 	}
 	// we send a notice frame telling remote to close the session
-	pad := genRandomPadding()
+
+	buf := sesh.streamObfsBufPool.Get().(*[]byte)
+	common.CryptoRandRead((*buf)[:1])
+	padLen := int((*buf)[0]) + 1
+	payload := (*buf)[frameHeaderLength : padLen+frameHeaderLength]
+	common.CryptoRandRead(payload)
+
 	f := &Frame{
 		StreamID: 0xffffffff,
 		Seq:      0,
 		Closing:  closingSession,
-		Payload:  pad,
+		Payload:  payload,
 	}
-	obfsBuf := make([]byte, len(pad)+frameHeaderLength+sesh.Obfuscator.maxOverhead)
-	i, err := sesh.Obfs(f, obfsBuf, 0)
+	i, err := sesh.obfuscate(f, *buf, frameHeaderLength)
 	if err != nil {
 		return err
 	}
-	_, err = sesh.sb.send(obfsBuf[:i], new(uint32))
+	_, err = sesh.sb.send((*buf)[:i], new(uint32))
 	if err != nil {
 		return err
 	}
-
 	sesh.sb.closeAll()
 	log.Debugf("session %v closed gracefully", sesh.id)
 	return nil
