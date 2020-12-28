@@ -128,6 +128,10 @@ func MakeSession(id uint32, config SessionConfig) *Session {
 	return sesh
 }
 
+func (sesh *Session) GetSessionKey() [32]byte {
+	return sesh.sessionKey
+}
+
 func (sesh *Session) streamCountIncr() uint32 {
 	return atomic.AddUint32(&sesh.activeStreamCount, 1)
 }
@@ -232,7 +236,7 @@ func (sesh *Session) recvDataFromRemote(data []byte) error {
 	frame := sesh.recvFramePool.Get().(*Frame)
 	defer sesh.recvFramePool.Put(frame)
 
-	err := sesh.Deobfs(frame, data)
+	err := sesh.deobfuscate(frame, data)
 	if err != nil {
 		return fmt.Errorf("Failed to decrypt a frame for session %v: %v", sesh.id, err)
 	}
@@ -331,7 +335,7 @@ func (sesh *Session) Close() error {
 		Closing:  closingSession,
 		Payload:  payload,
 	}
-	i, err := sesh.Obfs(f, *buf, frameHeaderLength)
+	i, err := sesh.obfuscate(f, *buf, frameHeaderLength)
 	if err != nil {
 		return err
 	}

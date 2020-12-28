@@ -11,9 +11,6 @@ import (
 	"golang.org/x/crypto/salsa20"
 )
 
-type Obfser func(*Frame, []byte, int) (int, error)
-type Deobfser func(*Frame, []byte) error
-
 const frameHeaderLength = 14
 const salsa20NonceSize = 8
 
@@ -26,25 +23,19 @@ const (
 
 // Obfuscator is responsible for serialisation, obfuscation, and optional encryption of data frames.
 type Obfuscator struct {
-	// Used in Stream.Write. Add multiplexing headers, encrypt and add TLS header
-	Obfs Obfser
-	// Remove TLS header, decrypt and unmarshall frames
-	Deobfs     Deobfser
-	SessionKey [32]byte
+	payloadCipher cipher.AEAD
+
+	sessionKey [32]byte
 
 	maxOverhead int
 }
 
-// MakeObfs returns a function of type Obfser. An Obfser takes three arguments:
-// a *Frame with all the field set correctly, a []byte as buffer to put encrypted
-// message in, and an int called payloadOffsetInBuf to be used when *Frame.payload
-// is in the byte slice used as buffer (2nd argument). payloadOffsetInBuf specifies
-// the index at which data belonging to *Frame.Payload starts in the buffer.
-func MakeObfs(salsaKey [32]byte, payloadCipher cipher.AEAD) Obfser {
+// obfuscate adds multiplexing headers, encrypt and add TLS header
+func (o *Obfuscator) obfuscate(f *Frame, buf []byte, payloadOffsetInBuf int) (int, error) {
 	// The method here is to use the first payloadCipher.NonceSize() bytes of the serialised frame header
 	// as iv/nonce for the AEAD cipher to encrypt the frame payload. Then we use
 	// the authentication tag produced appended to the end of the ciphertext (of size payloadCipher.Overhead())
-	// as nonce for Salsa20 to encrypt the frame header. Both with SessionKey as keys.
+	// as nonce for Salsa20 to encrypt the frame header. Both with sessionKey as keys.
 	//
 	// Several cryptographic guarantees we have made here: that payloadCipher, as an AEAD, is given a unique
 	// iv/nonce each time, relative to its key; that the frame header encryptor Salsa20 is given a unique
@@ -72,159 +63,146 @@ func MakeObfs(salsaKey [32]byte, payloadCipher cipher.AEAD) Obfser {
 	// We can't ensure its uniqueness ourselves, which is why plaintext mode must only be used when the user input
 	// is already random-like. For Cloak it would normally mean that the user is using a proxy protocol that sends
 	// encrypted data.
-	obfs := func(f *Frame, buf []byte, payloadOffsetInBuf int) (int, error) {
-		payloadLen := len(f.Payload)
-		if payloadLen == 0 {
-			return 0, errors.New("payload cannot be empty")
-		}
-		var extraLen int
-		if payloadCipher == nil {
-			extraLen = salsa20NonceSize - payloadLen
-			if extraLen < 0 {
-				// if our payload is already greater than 8 bytes
-				extraLen = 0
-			}
-		} else {
-			extraLen = payloadCipher.Overhead()
-			if extraLen < salsa20NonceSize {
-				return 0, errors.New("AEAD's Overhead cannot be fewer than 8 bytes")
-			}
-		}
-
-		usefulLen := frameHeaderLength + payloadLen + extraLen
-		if len(buf) < usefulLen {
-			return 0, errors.New("obfs buffer too small")
-		}
-		// we do as much in-place as possible to save allocation
-		payload := buf[frameHeaderLength : frameHeaderLength+payloadLen]
-		if payloadOffsetInBuf != frameHeaderLength {
-			// if payload is not at the correct location in buffer
-			copy(payload, f.Payload)
-		}
-
-		header := buf[:frameHeaderLength]
-		binary.BigEndian.PutUint32(header[0:4], f.StreamID)
-		binary.BigEndian.PutUint64(header[4:12], f.Seq)
-		header[12] = f.Closing
-		header[13] = byte(extraLen)
-
-		if payloadCipher == nil {
-			if extraLen != 0 { // read nonce
-				extra := buf[usefulLen-extraLen : usefulLen]
-				common.CryptoRandRead(extra)
-			}
-		} else {
-			payloadCipher.Seal(payload[:0], header[:payloadCipher.NonceSize()], payload, nil)
-		}
-
-		nonce := buf[usefulLen-salsa20NonceSize : usefulLen]
-		salsa20.XORKeyStream(header, header, nonce, &salsaKey)
-
-		return usefulLen, nil
+	payloadLen := len(f.Payload)
+	if payloadLen == 0 {
+		return 0, errors.New("payload cannot be empty")
 	}
-	return obfs
+	var extraLen int
+	if o.payloadCipher == nil {
+		extraLen = salsa20NonceSize - payloadLen
+		if extraLen < 0 {
+			// if our payload is already greater than 8 bytes
+			extraLen = 0
+		}
+	} else {
+		extraLen = o.payloadCipher.Overhead()
+		if extraLen < salsa20NonceSize {
+			return 0, errors.New("AEAD's Overhead cannot be fewer than 8 bytes")
+		}
+	}
+
+	usefulLen := frameHeaderLength + payloadLen + extraLen
+	if len(buf) < usefulLen {
+		return 0, errors.New("obfs buffer too small")
+	}
+	// we do as much in-place as possible to save allocation
+	payload := buf[frameHeaderLength : frameHeaderLength+payloadLen]
+	if payloadOffsetInBuf != frameHeaderLength {
+		// if payload is not at the correct location in buffer
+		copy(payload, f.Payload)
+	}
+
+	header := buf[:frameHeaderLength]
+	binary.BigEndian.PutUint32(header[0:4], f.StreamID)
+	binary.BigEndian.PutUint64(header[4:12], f.Seq)
+	header[12] = f.Closing
+	header[13] = byte(extraLen)
+
+	if o.payloadCipher == nil {
+		if extraLen != 0 { // read nonce
+			extra := buf[usefulLen-extraLen : usefulLen]
+			common.CryptoRandRead(extra)
+		}
+	} else {
+		o.payloadCipher.Seal(payload[:0], header[:o.payloadCipher.NonceSize()], payload, nil)
+	}
+
+	nonce := buf[usefulLen-salsa20NonceSize : usefulLen]
+	salsa20.XORKeyStream(header, header, nonce, &o.sessionKey)
+
+	return usefulLen, nil
 }
 
-// MakeDeobfs returns a function Deobfser. A Deobfser takes in a single byte slice,
-// containing the message to be decrypted, and returns a *Frame containing the frame
-// information and plaintext
-func MakeDeobfs(salsaKey [32]byte, payloadCipher cipher.AEAD) Deobfser {
-	// frame header length + minimum data size (i.e. nonce size of salsa20)
-	const minInputLen = frameHeaderLength + salsa20NonceSize
-	deobfs := func(f *Frame, in []byte) error {
-		if len(in) < minInputLen {
-			return fmt.Errorf("input size %v, but it cannot be shorter than %v bytes", len(in), minInputLen)
-		}
+// deobfuscate removes TLS header, decrypt and unmarshall frames
+func (o *Obfuscator) deobfuscate(f *Frame, in []byte) error {
+	if len(in) < frameHeaderLength+salsa20NonceSize {
+		return fmt.Errorf("input size %v, but it cannot be shorter than %v bytes", len(in), frameHeaderLength+salsa20NonceSize)
+	}
 
-		header := in[:frameHeaderLength]
-		pldWithOverHead := in[frameHeaderLength:] // payload + potential overhead
+	header := in[:frameHeaderLength]
+	pldWithOverHead := in[frameHeaderLength:] // payload + potential overhead
 
-		nonce := in[len(in)-salsa20NonceSize:]
-		salsa20.XORKeyStream(header, header, nonce, &salsaKey)
+	nonce := in[len(in)-salsa20NonceSize:]
+	salsa20.XORKeyStream(header, header, nonce, &o.sessionKey)
 
-		streamID := binary.BigEndian.Uint32(header[0:4])
-		seq := binary.BigEndian.Uint64(header[4:12])
-		closing := header[12]
-		extraLen := header[13]
+	streamID := binary.BigEndian.Uint32(header[0:4])
+	seq := binary.BigEndian.Uint64(header[4:12])
+	closing := header[12]
+	extraLen := header[13]
 
-		usefulPayloadLen := len(pldWithOverHead) - int(extraLen)
-		if usefulPayloadLen < 0 || usefulPayloadLen > len(pldWithOverHead) {
-			return errors.New("extra length is negative or extra length is greater than total pldWithOverHead length")
-		}
+	usefulPayloadLen := len(pldWithOverHead) - int(extraLen)
+	if usefulPayloadLen < 0 || usefulPayloadLen > len(pldWithOverHead) {
+		return errors.New("extra length is negative or extra length is greater than total pldWithOverHead length")
+	}
 
-		var outputPayload []byte
+	var outputPayload []byte
 
-		if payloadCipher == nil {
-			if extraLen == 0 {
-				outputPayload = pldWithOverHead
-			} else {
-				outputPayload = pldWithOverHead[:usefulPayloadLen]
-			}
+	if o.payloadCipher == nil {
+		if extraLen == 0 {
+			outputPayload = pldWithOverHead
 		} else {
-			_, err := payloadCipher.Open(pldWithOverHead[:0], header[:payloadCipher.NonceSize()], pldWithOverHead, nil)
-			if err != nil {
-				return err
-			}
 			outputPayload = pldWithOverHead[:usefulPayloadLen]
 		}
-
-		f.StreamID = streamID
-		f.Seq = seq
-		f.Closing = closing
-		f.Payload = outputPayload
-		return nil
+	} else {
+		_, err := o.payloadCipher.Open(pldWithOverHead[:0], header[:o.payloadCipher.NonceSize()], pldWithOverHead, nil)
+		if err != nil {
+			return err
+		}
+		outputPayload = pldWithOverHead[:usefulPayloadLen]
 	}
-	return deobfs
+
+	f.StreamID = streamID
+	f.Seq = seq
+	f.Closing = closing
+	f.Payload = outputPayload
+	return nil
 }
 
-func MakeObfuscator(encryptionMethod byte, sessionKey [32]byte) (obfuscator Obfuscator, err error) {
-	obfuscator = Obfuscator{
-		SessionKey: sessionKey,
+func MakeObfuscator(encryptionMethod byte, sessionKey [32]byte) (o Obfuscator, err error) {
+	o = Obfuscator{
+		sessionKey: sessionKey,
 	}
-	var payloadCipher cipher.AEAD
 	switch encryptionMethod {
 	case EncryptionMethodPlain:
-		payloadCipher = nil
-		obfuscator.maxOverhead = salsa20NonceSize
+		o.payloadCipher = nil
+		o.maxOverhead = salsa20NonceSize
 	case EncryptionMethodAES256GCM:
 		var c cipher.Block
 		c, err = aes.NewCipher(sessionKey[:])
 		if err != nil {
 			return
 		}
-		payloadCipher, err = cipher.NewGCM(c)
+		o.payloadCipher, err = cipher.NewGCM(c)
 		if err != nil {
 			return
 		}
-		obfuscator.maxOverhead = payloadCipher.Overhead()
+		o.maxOverhead = o.payloadCipher.Overhead()
 	case EncryptionMethodAES128GCM:
 		var c cipher.Block
 		c, err = aes.NewCipher(sessionKey[:16])
 		if err != nil {
 			return
 		}
-		payloadCipher, err = cipher.NewGCM(c)
+		o.payloadCipher, err = cipher.NewGCM(c)
 		if err != nil {
 			return
 		}
-		obfuscator.maxOverhead = payloadCipher.Overhead()
+		o.maxOverhead = o.payloadCipher.Overhead()
 	case EncryptionMethodChaha20Poly1305:
-		payloadCipher, err = chacha20poly1305.New(sessionKey[:])
+		o.payloadCipher, err = chacha20poly1305.New(sessionKey[:])
 		if err != nil {
 			return
 		}
-		obfuscator.maxOverhead = payloadCipher.Overhead()
+		o.maxOverhead = o.payloadCipher.Overhead()
 	default:
-		return obfuscator, errors.New("Unknown encryption method")
+		return o, fmt.Errorf("unknown encryption method valued %v", encryptionMethod)
 	}
 
-	if payloadCipher != nil {
-		if payloadCipher.NonceSize() > frameHeaderLength {
-			return obfuscator, errors.New("payload AEAD's nonce size cannot be greater than size of frame header")
+	if o.payloadCipher != nil {
+		if o.payloadCipher.NonceSize() > frameHeaderLength {
+			return o, errors.New("payload AEAD's nonce size cannot be greater than size of frame header")
 		}
 	}
 
-	obfuscator.Obfs = MakeObfs(sessionKey, payloadCipher)
-	obfuscator.Deobfs = MakeDeobfs(sessionKey, payloadCipher)
 	return
 }

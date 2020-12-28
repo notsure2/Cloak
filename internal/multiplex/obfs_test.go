@@ -1,9 +1,9 @@
 package multiplex
 
 import (
-	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"github.com/stretchr/testify/assert"
 	"golang.org/x/crypto/chacha20poly1305"
 	"math/rand"
 	"reflect"
@@ -15,67 +15,117 @@ func TestGenerateObfs(t *testing.T) {
 	var sessionKey [32]byte
 	rand.Read(sessionKey[:])
 
-	run := func(obfuscator Obfuscator, ct *testing.T) {
+	run := func(o Obfuscator, t *testing.T) {
 		obfsBuf := make([]byte, 512)
-		_testFrame, _ := quick.Value(reflect.TypeOf(&Frame{}), rand.New(rand.NewSource(42)))
-		testFrame := _testFrame.Interface().(*Frame)
-		i, err := obfuscator.Obfs(testFrame, obfsBuf, 0)
-		if err != nil {
-			ct.Error("failed to obfs ", err)
-			return
-		}
-
+		_testFrame, _ := quick.Value(reflect.TypeOf(Frame{}), rand.New(rand.NewSource(42)))
+		testFrame := _testFrame.Interface().(Frame)
+		i, err := o.obfuscate(&testFrame, obfsBuf, 0)
+		assert.NoError(t, err)
 		var resultFrame Frame
-		err = obfuscator.Deobfs(&resultFrame, obfsBuf[:i])
-		if err != nil {
-			ct.Error("failed to deobfs ", err)
-			return
-		}
-		if !bytes.Equal(testFrame.Payload, resultFrame.Payload) || testFrame.StreamID != resultFrame.StreamID {
-			ct.Error("expecting", testFrame,
-				"got", resultFrame)
-			return
-		}
+
+		err = o.deobfuscate(&resultFrame, obfsBuf[:i])
+		assert.NoError(t, err)
+		assert.EqualValues(t, testFrame, resultFrame)
 	}
 
 	t.Run("plain", func(t *testing.T) {
-		obfuscator, err := MakeObfuscator(EncryptionMethodPlain, sessionKey)
-		if err != nil {
-			t.Errorf("failed to generate obfuscator %v", err)
-		} else {
-			run(obfuscator, t)
-		}
+		o, err := MakeObfuscator(EncryptionMethodPlain, sessionKey)
+		assert.NoError(t, err)
+		run(o, t)
 	})
 	t.Run("aes-256-gcm", func(t *testing.T) {
-		obfuscator, err := MakeObfuscator(EncryptionMethodAES256GCM, sessionKey)
-		if err != nil {
-			t.Errorf("failed to generate obfuscator %v", err)
-		} else {
-			run(obfuscator, t)
-		}
+		o, err := MakeObfuscator(EncryptionMethodAES256GCM, sessionKey)
+		assert.NoError(t, err)
+		run(o, t)
 	})
 	t.Run("aes-128-gcm", func(t *testing.T) {
-		obfuscator, err := MakeObfuscator(EncryptionMethodAES128GCM, sessionKey)
-		if err != nil {
-			t.Errorf("failed to generate obfuscator %v", err)
-		} else {
-			run(obfuscator, t)
-		}
+		o, err := MakeObfuscator(EncryptionMethodAES128GCM, sessionKey)
+		assert.NoError(t, err)
+		run(o, t)
 	})
 	t.Run("chacha20-poly1305", func(t *testing.T) {
-		obfuscator, err := MakeObfuscator(EncryptionMethodChaha20Poly1305, sessionKey)
-		if err != nil {
-			t.Errorf("failed to generate obfuscator %v", err)
-		} else {
-			run(obfuscator, t)
-		}
+		o, err := MakeObfuscator(EncryptionMethodChaha20Poly1305, sessionKey)
+		assert.NoError(t, err)
+		run(o, t)
 	})
 	t.Run("unknown encryption method", func(t *testing.T) {
 		_, err := MakeObfuscator(0xff, sessionKey)
-		if err == nil {
-			t.Errorf("unknown encryption mehtod error expected")
-		}
+		assert.Error(t, err)
 	})
+}
+
+func TestObfuscate(t *testing.T) {
+	var sessionKey [32]byte
+	rand.Read(sessionKey[:])
+
+	const testPayloadLen = 1024
+	testPayload := make([]byte, testPayloadLen)
+	rand.Read(testPayload)
+	f := Frame{
+		StreamID: 0,
+		Seq:      0,
+		Closing:  0,
+		Payload:  testPayload,
+	}
+
+	runTest := func(t *testing.T, o Obfuscator) {
+		obfsBuf := make([]byte, testPayloadLen*2)
+		n, err := o.obfuscate(&f, obfsBuf, 0)
+		assert.NoError(t, err)
+
+		resultFrame := Frame{}
+		err = o.deobfuscate(&resultFrame, obfsBuf[:n])
+		assert.NoError(t, err)
+
+		assert.EqualValues(t, f, resultFrame)
+	}
+
+	t.Run("plain", func(t *testing.T) {
+		o := Obfuscator{
+			payloadCipher: nil,
+			sessionKey:    sessionKey,
+			maxOverhead:   salsa20NonceSize,
+		}
+		runTest(t, o)
+	})
+
+	t.Run("aes-128-gcm", func(t *testing.T) {
+		c, err := aes.NewCipher(sessionKey[:16])
+		assert.NoError(t, err)
+		payloadCipher, err := cipher.NewGCM(c)
+		assert.NoError(t, err)
+		o := Obfuscator{
+			payloadCipher: payloadCipher,
+			sessionKey:    sessionKey,
+			maxOverhead:   payloadCipher.Overhead(),
+		}
+		runTest(t, o)
+	})
+
+	t.Run("aes-256-gcm", func(t *testing.T) {
+		c, err := aes.NewCipher(sessionKey[:])
+		assert.NoError(t, err)
+		payloadCipher, err := cipher.NewGCM(c)
+		assert.NoError(t, err)
+		o := Obfuscator{
+			payloadCipher: payloadCipher,
+			sessionKey:    sessionKey,
+			maxOverhead:   payloadCipher.Overhead(),
+		}
+		runTest(t, o)
+	})
+
+	t.Run("chacha20-poly1305", func(t *testing.T) {
+		payloadCipher, err := chacha20poly1305.New(sessionKey[:])
+		assert.NoError(t, err)
+		o := Obfuscator{
+			payloadCipher: payloadCipher,
+			sessionKey:    sessionKey,
+			maxOverhead:   payloadCipher.Overhead(),
+		}
+		runTest(t, o)
+	})
+
 }
 
 func BenchmarkObfs(b *testing.B) {
@@ -96,40 +146,57 @@ func BenchmarkObfs(b *testing.B) {
 		c, _ := aes.NewCipher(key[:])
 		payloadCipher, _ := cipher.NewGCM(c)
 
-		obfs := MakeObfs(key, payloadCipher)
+		obfuscator := Obfuscator{
+			payloadCipher: payloadCipher,
+			sessionKey:    key,
+			maxOverhead:   payloadCipher.Overhead(),
+		}
+
 		b.SetBytes(int64(len(testFrame.Payload)))
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			obfs(testFrame, obfsBuf, 0)
+			obfuscator.obfuscate(testFrame, obfsBuf, 0)
 		}
 	})
 	b.Run("AES128GCM", func(b *testing.B) {
 		c, _ := aes.NewCipher(key[:16])
 		payloadCipher, _ := cipher.NewGCM(c)
 
-		obfs := MakeObfs(key, payloadCipher)
+		obfuscator := Obfuscator{
+			payloadCipher: payloadCipher,
+			sessionKey:    key,
+			maxOverhead:   payloadCipher.Overhead(),
+		}
 		b.SetBytes(int64(len(testFrame.Payload)))
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			obfs(testFrame, obfsBuf, 0)
+			obfuscator.obfuscate(testFrame, obfsBuf, 0)
 		}
 	})
 	b.Run("plain", func(b *testing.B) {
-		obfs := MakeObfs(key, nil)
+		obfuscator := Obfuscator{
+			payloadCipher: nil,
+			sessionKey:    key,
+			maxOverhead:   salsa20NonceSize,
+		}
 		b.SetBytes(int64(len(testFrame.Payload)))
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			obfs(testFrame, obfsBuf, 0)
+			obfuscator.obfuscate(testFrame, obfsBuf, 0)
 		}
 	})
 	b.Run("chacha20Poly1305", func(b *testing.B) {
-		payloadCipher, _ := chacha20poly1305.New(key[:16])
+		payloadCipher, _ := chacha20poly1305.New(key[:])
 
-		obfs := MakeObfs(key, payloadCipher)
+		obfuscator := Obfuscator{
+			payloadCipher: payloadCipher,
+			sessionKey:    key,
+			maxOverhead:   payloadCipher.Overhead(),
+		}
 		b.SetBytes(int64(len(testFrame.Payload)))
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			obfs(testFrame, obfsBuf, 0)
+			obfuscator.obfuscate(testFrame, obfsBuf, 0)
 		}
 	})
 }
@@ -151,57 +218,70 @@ func BenchmarkDeobfs(b *testing.B) {
 	b.Run("AES256GCM", func(b *testing.B) {
 		c, _ := aes.NewCipher(key[:])
 		payloadCipher, _ := cipher.NewGCM(c)
+		obfuscator := Obfuscator{
+			payloadCipher: payloadCipher,
+			sessionKey:    key,
+			maxOverhead:   payloadCipher.Overhead(),
+		}
 
-		obfs := MakeObfs(key, payloadCipher)
-		n, _ := obfs(testFrame, obfsBuf, 0)
-		deobfs := MakeDeobfs(key, payloadCipher)
+		n, _ := obfuscator.obfuscate(testFrame, obfsBuf, 0)
 
 		frame := new(Frame)
 		b.SetBytes(int64(n))
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			deobfs(frame, obfsBuf[:n])
+			obfuscator.deobfuscate(frame, obfsBuf[:n])
 		}
 	})
 	b.Run("AES128GCM", func(b *testing.B) {
 		c, _ := aes.NewCipher(key[:16])
 		payloadCipher, _ := cipher.NewGCM(c)
 
-		obfs := MakeObfs(key, payloadCipher)
-		n, _ := obfs(testFrame, obfsBuf, 0)
-		deobfs := MakeDeobfs(key, payloadCipher)
+		obfuscator := Obfuscator{
+			payloadCipher: payloadCipher,
+			sessionKey:    key,
+			maxOverhead:   payloadCipher.Overhead(),
+		}
+		n, _ := obfuscator.obfuscate(testFrame, obfsBuf, 0)
 
 		frame := new(Frame)
 		b.ResetTimer()
 		b.SetBytes(int64(n))
 		for i := 0; i < b.N; i++ {
-			deobfs(frame, obfsBuf[:n])
+			obfuscator.deobfuscate(frame, obfsBuf[:n])
 		}
 	})
 	b.Run("plain", func(b *testing.B) {
-		obfs := MakeObfs(key, nil)
-		n, _ := obfs(testFrame, obfsBuf, 0)
-		deobfs := MakeDeobfs(key, nil)
+		obfuscator := Obfuscator{
+			payloadCipher: nil,
+			sessionKey:    key,
+			maxOverhead:   salsa20NonceSize,
+		}
+		n, _ := obfuscator.obfuscate(testFrame, obfsBuf, 0)
 
 		frame := new(Frame)
 		b.ResetTimer()
 		b.SetBytes(int64(n))
 		for i := 0; i < b.N; i++ {
-			deobfs(frame, obfsBuf[:n])
+			obfuscator.deobfuscate(frame, obfsBuf[:n])
 		}
 	})
 	b.Run("chacha20Poly1305", func(b *testing.B) {
-		payloadCipher, _ := chacha20poly1305.New(key[:16])
+		payloadCipher, _ := chacha20poly1305.New(key[:])
 
-		obfs := MakeObfs(key, payloadCipher)
-		n, _ := obfs(testFrame, obfsBuf, 0)
-		deobfs := MakeDeobfs(key, payloadCipher)
+		obfuscator := Obfuscator{
+			payloadCipher: nil,
+			sessionKey:    key,
+			maxOverhead:   payloadCipher.Overhead(),
+		}
+
+		n, _ := obfuscator.obfuscate(testFrame, obfsBuf, 0)
 
 		frame := new(Frame)
 		b.ResetTimer()
 		b.SetBytes(int64(n))
 		for i := 0; i < b.N; i++ {
-			deobfs(frame, obfsBuf[:n])
+			obfuscator.deobfuscate(frame, obfsBuf[:n])
 		}
 	})
 }
