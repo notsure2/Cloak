@@ -13,18 +13,15 @@ import (
 )
 
 const (
-	acceptBacklog = 1024
-	// TODO: will this be a signature?
-	defaultSendRecvBufSize   = 20480
+	acceptBacklog            = 1024
 	defaultInactivityTimeout = 30 * time.Second
+	defaultMaxOnWireSize     = 1<<14 + 256 // https://tools.ietf.org/html/rfc8446#section-5.2
 )
 
 var ErrBrokenSession = errors.New("broken session")
 var errRepeatSessionClosing = errors.New("trying to close a closed session")
 var errRepeatStreamClosing = errors.New("trying to close a closed stream")
 var errNoMultiplex = errors.New("a singleplexing session can have only one stream")
-
-type switchboardStrategy int
 
 type SessionConfig struct {
 	Obfuscator
@@ -39,12 +36,6 @@ type SessionConfig struct {
 
 	// maximum size of an obfuscated frame, including headers and overhead
 	MsgOnWireSizeLimit int
-
-	// StreamSendBufferSize sets the buffer size used to send data from a Stream (Stream.obfsBuf)
-	StreamSendBufferSize int
-	// ConnReceiveBufferSize sets the buffer size used to receive data from an underlying Conn (allocated in
-	// switchboard.deplex)
-	ConnReceiveBufferSize int
 
 	// InactivityTimeout sets the duration a Session waits while it has no active streams before it closes itself
 	InactivityTimeout time.Duration
@@ -82,11 +73,17 @@ type Session struct {
 
 	closed uint32
 
-	terminalMsg atomic.Value
+	terminalMsgSetter sync.Once
+	terminalMsg       string
 
 	// the max size passed to Write calls before it splits it into multiple frames
 	// i.e. the max size a piece of data can fit into a Frame.Payload
 	maxStreamUnitWrite int
+	// streamSendBufferSize sets the buffer size used to send data from a Stream (Stream.obfsBuf)
+	streamSendBufferSize int
+	// connReceiveBufferSize sets the buffer size used to receive data from an underlying Conn (allocated in
+	// switchboard.deplex)
+	connReceiveBufferSize int
 }
 
 func MakeSession(id uint32, config SessionConfig) *Session {
@@ -103,23 +100,19 @@ func MakeSession(id uint32, config SessionConfig) *Session {
 	if config.Valve == nil {
 		sesh.Valve = UNLIMITED_VALVE
 	}
-	if config.StreamSendBufferSize <= 0 {
-		sesh.StreamSendBufferSize = defaultSendRecvBufSize
-	}
-	if config.ConnReceiveBufferSize <= 0 {
-		sesh.ConnReceiveBufferSize = defaultSendRecvBufSize
-	}
 	if config.MsgOnWireSizeLimit <= 0 {
-		sesh.MsgOnWireSizeLimit = defaultSendRecvBufSize - 1024
+		sesh.MsgOnWireSizeLimit = defaultMaxOnWireSize
 	}
 	if config.InactivityTimeout == 0 {
 		sesh.InactivityTimeout = defaultInactivityTimeout
 	}
-	// todo: validation. this must be smaller than StreamSendBufferSize
-	sesh.maxStreamUnitWrite = sesh.MsgOnWireSizeLimit - frameHeaderLength - sesh.Obfuscator.maxOverhead
+
+	sesh.maxStreamUnitWrite = sesh.MsgOnWireSizeLimit - frameHeaderLength - sesh.maxOverhead
+	sesh.streamSendBufferSize = sesh.MsgOnWireSizeLimit
+	sesh.connReceiveBufferSize = 20480 // for backwards compatibility
 
 	sesh.streamObfsBufPool = sync.Pool{New: func() interface{} {
-		b := make([]byte, sesh.StreamSendBufferSize)
+		b := make([]byte, sesh.streamSendBufferSize)
 		return &b
 	}}
 
@@ -187,7 +180,7 @@ func (sesh *Session) closeStream(s *Stream, active bool) error {
 	if !atomic.CompareAndSwapUint32(&s.closed, 0, 1) {
 		return fmt.Errorf("closing stream %v: %w", s.id, errRepeatStreamClosing)
 	}
-	_ = s.getRecvBuf().Close() // recvBuf.Close should not return error
+	_ = s.recvBuf.Close() // recvBuf.Close should not return error
 
 	if active {
 		tmpBuf := sesh.streamObfsBufPool.Get().(*[]byte)
@@ -271,16 +264,13 @@ func (sesh *Session) recvDataFromRemote(data []byte) error {
 }
 
 func (sesh *Session) SetTerminalMsg(msg string) {
-	sesh.terminalMsg.Store(msg)
+	sesh.terminalMsgSetter.Do(func() {
+		sesh.terminalMsg = msg
+	})
 }
 
 func (sesh *Session) TerminalMsg() string {
-	msg := sesh.terminalMsg.Load()
-	if msg != nil {
-		return msg.(string)
-	} else {
-		return ""
-	}
+	return sesh.terminalMsg
 }
 
 func (sesh *Session) closeSession() error {
@@ -292,13 +282,11 @@ func (sesh *Session) closeSession() error {
 	sesh.streamsM.Lock()
 	close(sesh.acceptCh)
 	for id, stream := range sesh.streams {
-		if stream == nil {
-			continue
+		if stream != nil && atomic.CompareAndSwapUint32(&stream.closed, 0, 1) {
+			_ = stream.recvBuf.Close() // will not block
+			delete(sesh.streams, id)
+			sesh.streamCountDecr()
 		}
-		atomic.StoreUint32(&stream.closed, 1)
-		_ = stream.getRecvBuf().Close() // will not block
-		delete(sesh.streams, id)
-		sesh.streamCountDecr()
 	}
 	sesh.streamsM.Unlock()
 	return nil
@@ -339,7 +327,7 @@ func (sesh *Session) Close() error {
 	if err != nil {
 		return err
 	}
-	_, err = sesh.sb.send((*buf)[:i], new(uint32))
+	_, err = sesh.sb.send((*buf)[:i], new(net.Conn))
 	if err != nil {
 		return err
 	}
