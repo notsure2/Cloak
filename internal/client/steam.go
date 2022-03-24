@@ -1,27 +1,15 @@
-// Fingerprint of Chrome 97
+// Fingerprint of Steam Client
 
 package client
 
 import (
 	"encoding/binary"
 	"encoding/hex"
-	"github.com/cbeuw/Cloak/internal/common"
 )
 
-type Chrome struct{}
+type Steam struct{}
 
-func makeGREASE() []byte {
-	// see https://tools.ietf.org/html/draft-davidben-tls-grease-01
-	// This is exclusive to Chrome.
-	var one [1]byte
-	common.CryptoRandRead(one[:])
-	sixteenth := one[0] % 16
-	monoGREASE := sixteenth*16 + 0xA
-	doubleGREASE := []byte{monoGREASE, monoGREASE}
-	return doubleGREASE
-}
-
-func (c *Chrome) composeExtensions(serverName string, keyShare []byte) []byte {
+func (c *Steam) composeExtensions(serverName string, keyShare []byte) []byte {
 
 	makeSupportedGroups := func() []byte {
 		suppGroupListLen := []byte{0x00, 0x08}
@@ -79,7 +67,7 @@ func (c *Chrome) composeExtensions(serverName string, keyShare []byte) []byte {
 	return ret
 }
 
-func (c *Chrome) composeClientHello(hd clientHelloFields) (ch []byte) {
+func (c *Steam) composeClientHello(hd clientHelloFields) (ch []byte) {
 	var clientHello [12][]byte
 	clientHello[0] = []byte{0x01}             // handshake type
 	clientHello[1] = []byte{0x00, 0x01, 0xfc} // length 508
@@ -88,7 +76,7 @@ func (c *Chrome) composeClientHello(hd clientHelloFields) (ch []byte) {
 	clientHello[4] = []byte{0x20}             // session id length 32
 	clientHello[5] = hd.sessionId             // session id
 	clientHello[6] = []byte{0x00, 0x20}       // cipher suites length 32
-	cipherSuites, _ := hex.DecodeString("130113021303c02bc02fc02cc030cca9cca8c013c014009c009d002f0035")
+	cipherSuites, _ := hex.DecodeString("130313011302cca9cca8c02bc02fc02cc030c013c014009c009d002f0035")
 	clientHello[7] = append(makeGREASE(), cipherSuites...) // cipher suites
 	clientHello[8] = []byte{0x01}                          // compression methods length 1
 	clientHello[9] = []byte{0x00}                          // compression methods

@@ -238,7 +238,9 @@ func (raw *RawConfig) ProcessRawConfig(worldState common.WorldState) (local Loca
 		case "firefox":
 			browser = &Firefox{}
 		case "chrome":
-			fallthrough
+			browser = &Chrome{}
+		case "steam":
+			browser = &Steam{}
 		default:
 			browser = &Chrome{}
 		}
