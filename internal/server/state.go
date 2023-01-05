@@ -17,15 +17,17 @@ import (
 )
 
 type RawConfig struct {
-	ProxyBook    map[string][]string
-	BindAddr     []string
-	BypassUID    [][]byte
-	RedirAddr    string
-	PrivateKey   []byte
-	AdminUID     []byte
-	DatabasePath string
-	KeepAlive    int
-	CncMode      bool
+	ProxyBook                map[string][]string
+	BindAddr                 []string
+	BypassUID                [][]byte
+	RedirAddr                string
+	PrivateKey               []byte
+	AdminUID                 []byte
+	DatabasePath             string
+	KeepAlive                int
+	CncMode                  bool
+	LoopbackTcpSendBuffer    int
+	LoopbackTcpReceiveBuffer int
 }
 
 // State type stores the global state of the program
@@ -175,14 +177,20 @@ func InitState(preParse RawConfig, worldState common.WorldState) (sta *State, er
 		}
 
 		return c.Control(func(fd uintptr) {
-			err := syscall.SetsockoptInt(platformfd(fd), syscall.SOL_SOCKET, syscall.SO_SNDBUF, 32*1024)
-			if err != nil {
-				log.Println("setsocketopt SO_SNDBUF: ", err)
+			if preParse.LoopbackTcpSendBuffer > 0 {
+				log.Debugf("Setting loopback connection tcp send buffer: %d", preParse.LoopbackTcpSendBuffer)
+				err := syscall.SetsockoptInt(platformfd(fd), syscall.SOL_SOCKET, syscall.SO_SNDBUF, preParse.LoopbackTcpSendBuffer)
+				if err != nil {
+					log.Errorf("setsocketopt SO_SNDBUF: %s\n", err)
+				}
 			}
 
-			err = syscall.SetsockoptInt(platformfd(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF, 32*1024)
-			if err != nil {
-				log.Println("setsocketopt SO_RCVBUF: ", err)
+			if preParse.LoopbackTcpReceiveBuffer > 0 {
+				log.Debugf("Setting loopback connection tcp receive buffer: %d", preParse.LoopbackTcpReceiveBuffer)
+				err = syscall.SetsockoptInt(platformfd(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF, preParse.LoopbackTcpReceiveBuffer)
+				if err != nil {
+					log.Errorf("setsocketopt SO_RCVBUF: %s\n", err)
+				}
 			}
 		})
 	}
