@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"github.com/cbeuw/Cloak/internal/common"
 	"github.com/cbeuw/Cloak/internal/server/usermanager"
+	log "github.com/sirupsen/logrus"
 	"io/ioutil"
 	"net"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -155,10 +157,40 @@ func InitState(preParse RawConfig, worldState common.WorldState) (sta *State, er
 		sta.Panel = MakeUserPanel(manager)
 	}
 
+	dialerControl := func(network, address string, c syscall.RawConn) error {
+		if !strings.HasPrefix(network, "tcp") {
+			return nil
+		}
+
+		ips, err := net.LookupHost(strings.Split(address, ":")[0])
+		if err != nil {
+			return err
+		}
+
+		for _, ipString := range ips {
+			ip := net.ParseIP(ipString)
+			if !ip.IsLoopback() {
+				return nil
+			}
+		}
+
+		return c.Control(func(fd uintptr) {
+			err := syscall.SetsockoptInt(platformfd(fd), syscall.SOL_SOCKET, syscall.SO_SNDBUF, 32*1024)
+			if err != nil {
+				log.Println("setsocketopt SO_SNDBUF: ", err)
+			}
+
+			err = syscall.SetsockoptInt(platformfd(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF, 32*1024)
+			if err != nil {
+				log.Println("setsocketopt SO_RCVBUF: ", err)
+			}
+		})
+	}
+
 	if preParse.KeepAlive <= 0 {
-		sta.ProxyDialer = &net.Dialer{KeepAlive: -1}
+		sta.ProxyDialer = &net.Dialer{KeepAlive: -1, Control: dialerControl}
 	} else {
-		sta.ProxyDialer = &net.Dialer{KeepAlive: time.Duration(preParse.KeepAlive) * time.Second}
+		sta.ProxyDialer = &net.Dialer{KeepAlive: time.Duration(preParse.KeepAlive) * time.Second, Control: dialerControl}
 	}
 
 	sta.RedirHost, sta.RedirPort, err = parseRedirAddr(preParse.RedirAddr)
