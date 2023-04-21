@@ -5,15 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/cbeuw/Cloak/internal/common"
-	"github.com/cbeuw/Cloak/internal/server/usermanager"
-	log "github.com/sirupsen/logrus"
 	"io/ioutil"
 	"net"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/cbeuw/Cloak/internal/common"
+	"github.com/cbeuw/Cloak/internal/server/usermanager"
+	log "github.com/sirupsen/logrus"
 )
 
 type RawConfig struct {
