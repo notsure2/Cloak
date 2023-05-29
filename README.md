@@ -185,6 +185,11 @@ more detectable as a proxy, but it will make the Cloak client detect internet in
 data, after which the connection will be closed by Cloak. Cloak will not enforce any timeout on TCP connections after it
 is established.
 
+`LoopbackTcpSendBuffer` is the number of bytes to use for the tcp loopback send buffer. Use a low value like 4096 to reduce upload bufferbloat on client.
+
+`LoopbackTcpReceiveBuffer` is the number of bytes to use for the tcp loopback receive buffer. Use a low value like 4096 to reduce download bufferbloat on client if the server is very close (low ping).
+
+
 ## Setup
 
 ### Server
