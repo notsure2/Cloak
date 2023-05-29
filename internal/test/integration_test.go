@@ -207,7 +207,7 @@ func establishSession(lcc client.LocalConnConfig, rcc client.RemoteConnConfig, a
 	} else {
 		var proxyToCkClientL *connutil.PipeListener
 		proxyToCkClientD, proxyToCkClientL = connutil.DialerListener(10 * 1024)
-		go client.RouteTCP(proxyToCkClientL, lcc.Timeout, rcc.Singleplex, clientSeshMaker)
+		go client.RouteTCP(proxyToCkClientL, lcc.Timeout, rcc.Singleplex, 0, 0, clientSeshMaker)
 	}
 
 	// set up server

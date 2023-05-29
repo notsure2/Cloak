@@ -105,32 +105,35 @@ func RouteTCP(listener net.Listener, streamTimeout time.Duration, singleplex boo
 			continue
 		}
 
-		syscallConn, err := localConn.(*net.TCPConn).SyscallConn()
-		if err != nil {
-			log.Fatal(err)
-			continue
-		}
-
-		err = syscallConn.Control(func(fd uintptr) {
-			if sendBufferSize > 0 {
-				log.Debugf("Setting loopback connection tcp send buffer: %d", sendBufferSize)
-				err := syscall.SetsockoptInt(common.Platformfd(fd), syscall.SOL_SOCKET, syscall.SO_SNDBUF, sendBufferSize)
-				if err != nil {
-					log.Errorf("setsocketopt SO_SNDBUF: %s\n", err)
-				}
+		conn, ok := localConn.(*net.TCPConn)
+		if ok {
+			syscallConn, err := conn.SyscallConn()
+			if err != nil {
+				log.Fatal(err)
+				continue
 			}
 
-			if receiveBufferSize > 0 {
-				log.Debugf("Setting loopback connection tcp receive buffer: %d", receiveBufferSize)
-				err = syscall.SetsockoptInt(common.Platformfd(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF, receiveBufferSize)
-				if err != nil {
-					log.Errorf("setsocketopt SO_RCVBUF: %s\n", err)
+			err = syscallConn.Control(func(fd uintptr) {
+				if sendBufferSize > 0 {
+					log.Debugf("Setting loopback connection tcp send buffer: %d", sendBufferSize)
+					err := syscall.SetsockoptInt(common.Platformfd(fd), syscall.SOL_SOCKET, syscall.SO_SNDBUF, sendBufferSize)
+					if err != nil {
+						log.Errorf("setsocketopt SO_SNDBUF: %s\n", err)
+					}
 				}
+
+				if receiveBufferSize > 0 {
+					log.Debugf("Setting loopback connection tcp receive buffer: %d", receiveBufferSize)
+					err = syscall.SetsockoptInt(common.Platformfd(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF, receiveBufferSize)
+					if err != nil {
+						log.Errorf("setsocketopt SO_RCVBUF: %s\n", err)
+					}
+				}
+			})
+			if err != nil {
+				log.Fatal(err)
+				continue
 			}
-		})
-		if err != nil {
-			log.Fatal(err)
-			continue
 		}
 
 		if !singleplex && (sesh == nil || sesh.IsClosed()) {
