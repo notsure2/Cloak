@@ -87,7 +87,7 @@ func ssvToJson(ssv string) (ret []byte) {
 		r = strings.Replace(r, `\;`, `;`, -1)
 		return r
 	}
-	unquoted := []string{"NumConn", "StreamTimeout", "KeepAlive", "UDP"}
+	unquoted := []string{"NumConn", "StreamTimeout", "KeepAlive", "UDP", "LoopbackTcpSendBuffer", "LoopbackTcpReceiveBuffer"}
 	lines := strings.Split(unescape(ssv), ";")
 	ret = []byte("{")
 	for _, ln := range lines {
