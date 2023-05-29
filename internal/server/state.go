@@ -180,7 +180,7 @@ func InitState(preParse RawConfig, worldState common.WorldState) (sta *State, er
 		return c.Control(func(fd uintptr) {
 			if preParse.LoopbackTcpSendBuffer > 0 {
 				log.Debugf("Setting loopback connection tcp send buffer: %d", preParse.LoopbackTcpSendBuffer)
-				err := syscall.SetsockoptInt(platformfd(fd), syscall.SOL_SOCKET, syscall.SO_SNDBUF, preParse.LoopbackTcpSendBuffer)
+				err := syscall.SetsockoptInt(common.Platformfd(fd), syscall.SOL_SOCKET, syscall.SO_SNDBUF, preParse.LoopbackTcpSendBuffer)
 				if err != nil {
 					log.Errorf("setsocketopt SO_SNDBUF: %s\n", err)
 				}
@@ -188,7 +188,7 @@ func InitState(preParse RawConfig, worldState common.WorldState) (sta *State, er
 
 			if preParse.LoopbackTcpReceiveBuffer > 0 {
 				log.Debugf("Setting loopback connection tcp receive buffer: %d", preParse.LoopbackTcpReceiveBuffer)
-				err = syscall.SetsockoptInt(platformfd(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF, preParse.LoopbackTcpReceiveBuffer)
+				err = syscall.SetsockoptInt(common.Platformfd(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF, preParse.LoopbackTcpReceiveBuffer)
 				if err != nil {
 					log.Errorf("setsocketopt SO_RCVBUF: %s\n", err)
 				}

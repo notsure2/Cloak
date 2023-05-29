@@ -1,10 +1,10 @@
 //go:build windows
 // +build windows
 
-package server
+package common
 
 import "syscall"
 
-func platformfd(fd uintptr) syscall.Handle {
+func Platformfd(fd uintptr) syscall.Handle {
 	return syscall.Handle(fd)
 }

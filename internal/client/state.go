@@ -33,13 +33,15 @@ type RawConfig struct {
 	RemotePort       string   // jsonOptional
 	AlternativeNames []string // jsonOptional
 	// defaults set in ProcessRawConfig
-	UDP           bool   // nullable
-	BrowserSig    string // nullable
-	Transport     string // nullable
-	CDNOriginHost string // nullable
-	CDNWsUrlPath  string // nullable
-	StreamTimeout int    // nullable
-	KeepAlive     int    // nullable
+	UDP                      bool   // nullable
+	BrowserSig               string // nullable
+	Transport                string // nullable
+	CDNOriginHost            string // nullable
+	CDNWsUrlPath             string // nullable
+	StreamTimeout            int    // nullable
+	KeepAlive                int    // nullable
+	LoopbackTcpSendBuffer    int    // nullable
+	LoopbackTcpReceiveBuffer int    // nullable
 }
 
 type RemoteConnConfig struct {
@@ -51,9 +53,11 @@ type RemoteConnConfig struct {
 }
 
 type LocalConnConfig struct {
-	LocalAddr      string
-	Timeout        time.Duration
-	MockDomainList []string
+	LocalAddr        string
+	Timeout          time.Duration
+	MockDomainList   []string
+	TcpSendBuffer    int
+	TcpReceiveBuffer int
 }
 
 type AuthInfo struct {
@@ -277,6 +281,14 @@ func (raw *RawConfig) ProcessRawConfig(worldState common.WorldState) (local Loca
 		local.Timeout = 300 * time.Second
 	} else {
 		local.Timeout = time.Duration(raw.StreamTimeout) * time.Second
+	}
+
+	if raw.LoopbackTcpSendBuffer > 0 {
+		local.TcpSendBuffer = raw.LoopbackTcpSendBuffer
+	}
+
+	if raw.LoopbackTcpReceiveBuffer > 0 {
+		local.TcpReceiveBuffer = raw.LoopbackTcpReceiveBuffer
 	}
 
 	return

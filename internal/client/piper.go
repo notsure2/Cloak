@@ -4,6 +4,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/cbeuw/Cloak/internal/common"
@@ -95,7 +96,7 @@ func RouteUDP(bindFunc func() (*net.UDPConn, error), streamTimeout time.Duration
 	}
 }
 
-func RouteTCP(listener net.Listener, streamTimeout time.Duration, singleplex bool, newSeshFunc func() *mux.Session) {
+func RouteTCP(listener net.Listener, streamTimeout time.Duration, singleplex bool, sendBufferSize int, receiveBufferSize int, newSeshFunc func() *mux.Session) {
 	var sesh *mux.Session
 	for {
 		localConn, err := listener.Accept()
@@ -103,6 +104,29 @@ func RouteTCP(listener net.Listener, streamTimeout time.Duration, singleplex boo
 			log.Fatal(err)
 			continue
 		}
+
+		file, err := localConn.(*net.TCPConn).File()
+		if err != nil {
+			log.Fatal(err)
+			continue
+		}
+
+		if sendBufferSize > 0 {
+			log.Debugf("Setting loopback connection tcp send buffer: %d", sendBufferSize)
+			err := syscall.SetsockoptInt(common.Platformfd(file.Fd()), syscall.SOL_SOCKET, syscall.SO_SNDBUF, sendBufferSize)
+			if err != nil {
+				log.Errorf("setsocketopt SO_SNDBUF: %s\n", err)
+			}
+		}
+
+		if receiveBufferSize > 0 {
+			log.Debugf("Setting loopback connection tcp receive buffer: %d", receiveBufferSize)
+			err = syscall.SetsockoptInt(common.Platformfd(file.Fd()), syscall.SOL_SOCKET, syscall.SO_RCVBUF, receiveBufferSize)
+			if err != nil {
+				log.Errorf("setsocketopt SO_RCVBUF: %s\n", err)
+			}
+		}
+
 		if !singleplex && (sesh == nil || sesh.IsClosed()) {
 			sesh = newSeshFunc()
 		}

@@ -1,8 +1,8 @@
 //go:build linux
 // +build linux
 
-package server
+package common
 
-func platformfd(fd uintptr) int {
+func Platformfd(fd uintptr) int {
 	return int(fd)
 }

@@ -201,6 +201,6 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		client.RouteTCP(listener, localConfig.Timeout, remoteConfig.Singleplex, seshMaker)
+		client.RouteTCP(listener, localConfig.Timeout, remoteConfig.Singleplex, localConfig.TcpSendBuffer, localConfig.TcpReceiveBuffer, seshMaker)
 	}
 }
