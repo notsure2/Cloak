@@ -129,6 +129,11 @@ func RouteTCP(listener net.Listener, streamTimeout time.Duration, singleplex boo
 						log.Errorf("setsocketopt SO_RCVBUF: %s\n", err)
 					}
 				}
+
+				err = syscall.SetsockoptInt(common.Platformfd(fd), syscall.IPPROTO_TCP, syscall.TCP_NODELAY, 1)
+				if err != nil {
+					log.Errorf("setsocketopt TCP_NODELAY: %s\n", err)
+				}
 			})
 			if err != nil {
 				log.Fatal(err)

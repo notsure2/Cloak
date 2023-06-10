@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"syscall"
 	"time"
 
 	"github.com/cbeuw/Cloak/internal/common"
@@ -293,6 +294,24 @@ func serveSession(sesh *mux.Session, ci ClientInfo, user *ActiveUser, sta *State
 			return err
 		}
 		log.Tracef("%v endpoint has been successfully connected", ci.ProxyMethod)
+
+		tcpConn, ok := localConn.(*net.TCPConn)
+		if ok {
+			syscallConn, err := tcpConn.SyscallConn()
+			if err != nil {
+				return err
+			}
+
+			err = syscallConn.Control(func(fd uintptr) {
+				err = syscall.SetsockoptInt(common.Platformfd(fd), syscall.IPPROTO_TCP, syscall.TCP_NODELAY, 1)
+				if err != nil {
+					log.Errorf("setsocketopt TCP_NODELAY: %s\n", err)
+				}
+			})
+			if err != nil {
+				return err
+			}
+		}
 
 		go func() {
 			if _, err := common.Copy(localConn, newStream); err != nil {

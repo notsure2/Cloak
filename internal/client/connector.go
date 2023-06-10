@@ -4,6 +4,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/cbeuw/Cloak/internal/common"
@@ -29,6 +30,22 @@ func MakeSession(connConfig RemoteConnConfig, authInfo AuthInfo, dialer common.D
 				// TODO increase the interval if failed multiple times
 				time.Sleep(time.Second * 3)
 				goto makeconn
+			}
+
+			tcpConn := remoteConn.(*net.TCPConn)
+			syscallConn, err := tcpConn.SyscallConn()
+			if err != nil {
+				panic(err)
+			}
+
+			err = syscallConn.Control(func(fd uintptr) {
+				err = syscall.SetsockoptInt(common.Platformfd(fd), syscall.IPPROTO_TCP, syscall.TCP_NODELAY, 1)
+				if err != nil {
+					log.Errorf("setsocketopt TCP_NODELAY: %s\n", err)
+				}
+			})
+			if err != nil {
+				panic(err)
 			}
 
 			transportConn := connConfig.TransportMaker()
