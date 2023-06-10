@@ -1,9 +1,14 @@
 package client
 
 import (
+	cryptoRand "crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
+	"math/big"
+	"math/rand"
 	"net"
+	"strings"
+	"time"
 
 	"github.com/cbeuw/Cloak/internal/common"
 	log "github.com/sirupsen/logrus"
@@ -60,6 +65,32 @@ type DirectTLS struct {
 	browser browser
 }
 
+var topLevelDomains = []string{"com", "net", "org", "it", "fr", "me", "ru", "cn", "es", "tr", "top", "xyz", "info"}
+
+// https://github.com/ProtonVPN/wireguard-go/commit/bcf344b39b213c1f32147851af0d2a8da9266883
+func randomServerName() string {
+	charNum := int('z') - int('a') + 1
+	size := 3 + randInt(10)
+	name := make([]byte, size)
+	for i := range name {
+		name[i] = byte(int('a') + randInt(charNum))
+	}
+	return string(name) + "." + randItem(topLevelDomains)
+}
+
+func randItem(list []string) string {
+	return list[randInt(len(list))]
+}
+
+func randInt(n int) int {
+	size, err := cryptoRand.Int(cryptoRand.Reader, big.NewInt(int64(n)))
+	if err == nil {
+		return int(size.Int64())
+	}
+	rand.Seed(time.Now().UnixNano())
+	return rand.Intn(n)
+}
+
 // NewClientTransport handles the TLS handshake for a given conn and returns the sessionKey
 // if the server proceed with Cloak authentication
 func (tls *DirectTLS) Handshake(rawConn net.Conn, authInfo AuthInfo) (sessionKey [32]byte, err error) {
@@ -73,6 +104,11 @@ func (tls *DirectTLS) Handshake(rawConn net.Conn, authInfo AuthInfo) (sessionKey
 		x25519KeyShare: payload.ciphertextWithTag[32:64],
 		serverName:     authInfo.MockDomain,
 	}
+
+	if strings.EqualFold(fields.serverName, "random") {
+		fields.serverName = randomServerName()
+	}
+
 	chOnly := tls.browser.composeClientHello(fields)
 	chWithRecordLayer := common.AddRecordLayer(chOnly, common.Handshake, common.VersionTLS11)
 	_, err = rawConn.Write(chWithRecordLayer)
