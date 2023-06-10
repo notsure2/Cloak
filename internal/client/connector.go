@@ -32,20 +32,22 @@ func MakeSession(connConfig RemoteConnConfig, authInfo AuthInfo, dialer common.D
 				goto makeconn
 			}
 
-			tcpConn := remoteConn.(*net.TCPConn)
-			syscallConn, err := tcpConn.SyscallConn()
-			if err != nil {
-				panic(err)
-			}
-
-			err = syscallConn.Control(func(fd uintptr) {
-				err = syscall.SetsockoptInt(common.Platformfd(fd), syscall.IPPROTO_TCP, syscall.TCP_NODELAY, 1)
+			tcpConn, ok := remoteConn.(*net.TCPConn)
+			if ok {
+				syscallConn, err := tcpConn.SyscallConn()
 				if err != nil {
-					log.Errorf("setsocketopt TCP_NODELAY: %s\n", err)
+					panic(err)
 				}
-			})
-			if err != nil {
-				panic(err)
+
+				err = syscallConn.Control(func(fd uintptr) {
+					err = syscall.SetsockoptInt(common.Platformfd(fd), syscall.IPPROTO_TCP, syscall.TCP_NODELAY, 1)
+					if err != nil {
+						log.Errorf("setsocketopt TCP_NODELAY: %s\n", err)
+					}
+				})
+				if err != nil {
+					panic(err)
+				}
 			}
 
 			transportConn := connConfig.TransportMaker()
