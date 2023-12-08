@@ -119,9 +119,14 @@ This field also has no effect if `AdminUID` isn't a valid UID or is empty.
 upstream proxy server. Zero or negative value disables it. Default is 0 (disabled).
 
 `LoopbackTcpSendBuffer` is the number of bytes to use for the tcp loopback send buffer. Use a low value like 4096 for a server-to-server bridge.
+
 `LoopbackTcpReceiveBuffer` is the number of bytes to use for the tcp loopback receive buffer. Use a low value like 4096 for a server-to-server bridge.
 
-These 2 options are not normally needed except when setting up a tcp server-to-server bridge using a shadowsocks or similar tcp server in the `ProxyBook` to reduce tcp performance degradation due to bufferbloat across the bridge.
+`RemoteTcpSendBuffer` is the number of bytes to use for the tcp remote send buffer. Use a low value like 4096 for a server-to-server bridge.
+
+`RemoteTcpReceiveBuffer` is the number of bytes to use for the tcp remote receive buffer. Use a low value like 4096 for a server-to-server bridge.
+
+These 4 options are not normally needed except when setting up a tcp server-to-server bridge using a shadowsocks or similar tcp server in the `ProxyBook` to reduce tcp performance degradation due to bufferbloat across the bridge.
 
 
 ### Client

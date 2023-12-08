@@ -42,14 +42,18 @@ type RawConfig struct {
 	KeepAlive                int    // nullable
 	LoopbackTcpSendBuffer    int    // nullable
 	LoopbackTcpReceiveBuffer int    // nullable
+	RemoteTcpSendBuffer      int    // nullable
+	RemoteTcpReceiveBuffer   int    // nullable
 }
 
 type RemoteConnConfig struct {
-	Singleplex     bool
-	NumConn        int
-	KeepAlive      time.Duration
-	RemoteAddr     string
-	TransportMaker func() Transport
+	Singleplex       bool
+	NumConn          int
+	KeepAlive        time.Duration
+	RemoteAddr       string
+	TransportMaker   func() Transport
+	TcpSendBuffer    int
+	TcpReceiveBuffer int
 }
 
 type LocalConnConfig struct {
@@ -289,6 +293,14 @@ func (raw *RawConfig) ProcessRawConfig(worldState common.WorldState) (local Loca
 
 	if raw.LoopbackTcpReceiveBuffer > 0 {
 		local.TcpReceiveBuffer = raw.LoopbackTcpReceiveBuffer
+	}
+
+	if raw.RemoteTcpSendBuffer > 0 {
+		remote.TcpSendBuffer = raw.RemoteTcpSendBuffer
+	}
+
+	if raw.RemoteTcpReceiveBuffer > 0 {
+		remote.TcpReceiveBuffer = raw.RemoteTcpReceiveBuffer
 	}
 
 	return

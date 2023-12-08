@@ -32,6 +32,9 @@ func MakeSession(connConfig RemoteConnConfig, authInfo AuthInfo, dialer common.D
 				goto makeconn
 			}
 
+			sendBufferSize := connConfig.TcpSendBuffer
+			receiveBufferSize := connConfig.TcpReceiveBuffer
+
 			tcpConn, ok := remoteConn.(*net.TCPConn)
 			if ok {
 				syscallConn, err := tcpConn.SyscallConn()
@@ -40,6 +43,22 @@ func MakeSession(connConfig RemoteConnConfig, authInfo AuthInfo, dialer common.D
 				}
 
 				err = syscallConn.Control(func(fd uintptr) {
+					if sendBufferSize > 0 {
+						log.Debugf("Setting remote connection tcp send buffer: %d", sendBufferSize)
+						err := syscall.SetsockoptInt(common.Platformfd(fd), syscall.SOL_SOCKET, syscall.SO_SNDBUF, sendBufferSize)
+						if err != nil {
+							log.Errorf("setsocketopt SO_SNDBUF: %s\n", err)
+						}
+					}
+
+					if receiveBufferSize > 0 {
+						log.Debugf("Setting remote connection tcp receive buffer: %d", receiveBufferSize)
+						err = syscall.SetsockoptInt(common.Platformfd(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF, receiveBufferSize)
+						if err != nil {
+							log.Errorf("setsocketopt SO_RCVBUF: %s\n", err)
+						}
+					}
+
 					err = syscall.SetsockoptInt(common.Platformfd(fd), syscall.IPPROTO_TCP, syscall.TCP_NODELAY, 1)
 					if err != nil {
 						log.Errorf("setsocketopt TCP_NODELAY: %s\n", err)
