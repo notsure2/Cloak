@@ -96,7 +96,7 @@ func RouteUDP(bindFunc func() (*net.UDPConn, error), streamTimeout time.Duration
 	}
 }
 
-func RouteTCP(listener net.Listener, streamTimeout time.Duration, singleplex bool, sendBufferSize int, receiveBufferSize int, newSeshFunc func() *mux.Session) {
+func RouteTCP(listener net.Listener, streamTimeout time.Duration, singleplex bool, newSeshFunc func() *mux.Session) {
 	var sesh *mux.Session
 	for {
 		localConn, err := listener.Accept()
@@ -114,22 +114,6 @@ func RouteTCP(listener net.Listener, streamTimeout time.Duration, singleplex boo
 			}
 
 			err = syscallConn.Control(func(fd uintptr) {
-				if sendBufferSize > 0 {
-					log.Debugf("Setting loopback connection tcp send buffer: %d", sendBufferSize)
-					err := syscall.SetsockoptInt(common.Platformfd(fd), syscall.SOL_SOCKET, syscall.SO_SNDBUF, sendBufferSize)
-					if err != nil {
-						log.Errorf("setsocketopt SO_SNDBUF: %s\n", err)
-					}
-				}
-
-				if receiveBufferSize > 0 {
-					log.Debugf("Setting loopback connection tcp receive buffer: %d", receiveBufferSize)
-					err = syscall.SetsockoptInt(common.Platformfd(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF, receiveBufferSize)
-					if err != nil {
-						log.Errorf("setsocketopt SO_RCVBUF: %s\n", err)
-					}
-				}
-
 				err = syscall.SetsockoptInt(common.Platformfd(fd), syscall.IPPROTO_TCP, syscall.TCP_NODELAY, 1)
 				if err != nil {
 					log.Errorf("setsocketopt TCP_NODELAY: %s\n", err)
