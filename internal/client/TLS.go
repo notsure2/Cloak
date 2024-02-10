@@ -3,7 +3,8 @@ package client
 import (
 	cryptoRand "crypto/rand"
 	"encoding/binary"
-	"encoding/hex"
+	utls "github.com/refraction-networking/utls"
+	log "github.com/sirupsen/logrus"
 	"math/big"
 	"math/rand"
 	"net"
@@ -11,7 +12,6 @@ import (
 	"time"
 
 	"github.com/cbeuw/Cloak/internal/common"
-	log "github.com/sirupsen/logrus"
 )
 
 const appDataMaxLength = 16401
@@ -23,17 +23,13 @@ type clientHelloFields struct {
 	serverName     string
 }
 
-func decodeHex(s string) []byte {
-	b, err := hex.DecodeString(s)
-	if err != nil {
-		panic(err)
-	}
-	return b
-}
+type browser int
 
-type browser interface {
-	composeClientHello(clientHelloFields) []byte
-}
+const (
+	chrome = iota
+	firefox
+	safari
+)
 
 func generateSNI(serverName string) []byte {
 	serverNameListLength := make([]byte, 2)
@@ -46,17 +42,6 @@ func generateSNI(serverName string) []byte {
 	copy(ret[2:3], serverNameType)
 	copy(ret[3:5], serverNameLength)
 	copy(ret[5:], serverName)
-	return ret
-}
-
-// addExtensionRecord, add type, length to extension data
-func addExtRec(typ []byte, data []byte) []byte {
-	length := make([]byte, 2)
-	binary.BigEndian.PutUint16(length, uint16(len(data)))
-	ret := make([]byte, 2+2+len(data))
-	copy(ret[0:2], typ)
-	copy(ret[2:4], length)
-	copy(ret[4:], data)
 	return ret
 }
 
@@ -87,11 +72,59 @@ func randInt(n int) int {
 	if err == nil {
 		return int(size.Int64())
 	}
+	//goland:noinspection GoDeprecation
 	rand.Seed(time.Now().UnixNano())
 	return rand.Intn(n)
 }
 
-// NewClientTransport handles the TLS handshake for a given conn and returns the sessionKey
+func buildClientHello(browser browser, fields clientHelloFields) ([]byte, error) {
+	// We don't use utls to handle connections (as it'll attempt a real TLS negotiation)
+	// We only want it to build the ClientHello locally
+	fakeConn := net.TCPConn{}
+	var helloID utls.ClientHelloID
+	switch browser {
+	case chrome:
+		helloID = utls.HelloChrome_Auto
+	case firefox:
+		helloID = utls.HelloFirefox_Auto
+	case safari:
+		helloID = utls.HelloSafari_Auto
+	}
+
+	uclient := utls.UClient(&fakeConn, &utls.Config{ServerName: fields.serverName}, helloID)
+	if err := uclient.BuildHandshakeState(); err != nil {
+		return []byte{}, err
+	}
+	if err := uclient.SetClientRandom(fields.random); err != nil {
+		return []byte{}, err
+	}
+
+	uclient.HandshakeState.Hello.SessionId = make([]byte, 32)
+	copy(uclient.HandshakeState.Hello.SessionId, fields.sessionId)
+
+	// Find the X25519 key share and overwrite it
+	var extIndex int
+	var keyShareIndex int
+	for i, ext := range uclient.Extensions {
+		ext, ok := ext.(*utls.KeyShareExtension)
+		if ok {
+			extIndex = i
+			for j, keyShare := range ext.KeyShares {
+				if keyShare.Group == utls.X25519 {
+					keyShareIndex = j
+				}
+			}
+		}
+	}
+	copy(uclient.Extensions[extIndex].(*utls.KeyShareExtension).KeyShares[keyShareIndex].Data, fields.x25519KeyShare)
+
+	if err := uclient.BuildHandshakeState(); err != nil {
+		return []byte{}, err
+	}
+	return uclient.HandshakeState.Hello.Raw, nil
+}
+
+// Handshake handles the TLS handshake for a given conn and returns the sessionKey
 // if the server proceed with Cloak authentication
 func (tls *DirectTLS) Handshake(rawConn net.Conn, authInfo AuthInfo) (sessionKey [32]byte, err error) {
 	payload, sharedSecret := makeAuthenticationPayload(authInfo)
@@ -109,8 +142,12 @@ func (tls *DirectTLS) Handshake(rawConn net.Conn, authInfo AuthInfo) (sessionKey
 		fields.serverName = randomServerName()
 	}
 
-	chOnly := tls.browser.composeClientHello(fields)
-	chWithRecordLayer := common.AddRecordLayer(chOnly, common.Handshake, common.VersionTLS11)
+	var ch []byte
+	ch, err = buildClientHello(tls.browser, fields)
+	if err != nil {
+		return
+	}
+	chWithRecordLayer := common.AddRecordLayer(ch, common.Handshake, common.VersionTLS11)
 	_, err = rawConn.Write(chWithRecordLayer)
 	if err != nil {
 		return

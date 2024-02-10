@@ -258,15 +258,13 @@ func (raw *RawConfig) ProcessRawConfig(worldState common.WorldState) (local Loca
 		var browser browser
 		switch strings.ToLower(raw.BrowserSig) {
 		case "firefox":
-			browser = &Firefox{}
+			browser = firefox
 		case "safari":
-			browser = &Safari{}
+			browser = safari
 		case "chrome":
-			browser = &Chrome{}
-		case "steam":
-			browser = &Steam{}
+			browser = chrome
 		default:
-			browser = &Chrome{}
+			browser = chrome
 		}
 		remote.TransportMaker = func() Transport {
 			return &DirectTLS{
