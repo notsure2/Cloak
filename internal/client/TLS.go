@@ -2,7 +2,6 @@ package client
 
 import (
 	cryptoRand "crypto/rand"
-	"encoding/binary"
 	utls "github.com/refraction-networking/utls"
 	log "github.com/sirupsen/logrus"
 	"math/big"
@@ -30,20 +29,6 @@ const (
 	firefox
 	safari
 )
-
-func generateSNI(serverName string) []byte {
-	serverNameListLength := make([]byte, 2)
-	binary.BigEndian.PutUint16(serverNameListLength, uint16(len(serverName)+3))
-	serverNameType := []byte{0x00} // host_name
-	serverNameLength := make([]byte, 2)
-	binary.BigEndian.PutUint16(serverNameLength, uint16(len(serverName)))
-	ret := make([]byte, 2+1+2+len(serverName))
-	copy(ret[0:2], serverNameListLength)
-	copy(ret[2:3], serverNameType)
-	copy(ret[3:5], serverNameLength)
-	copy(ret[5:], serverName)
-	return ret
-}
 
 type DirectTLS struct {
 	*common.TLSConn
