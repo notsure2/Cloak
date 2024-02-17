@@ -138,11 +138,10 @@ func ParseConfig(conf string) (raw RawConfig, err error) {
 // InitState process the RawConfig and initialises a server State accordingly
 func InitState(preParse RawConfig, worldState common.WorldState) (sta *State, err error) {
 	sta = &State{
-		BypassUID:   make(map[[16]byte]struct{}),
-		ProxyBook:   map[string]net.Addr{},
-		UsedRandom:  map[[32]byte]int64{},
-		RedirDialer: &net.Dialer{},
-		WorldState:  worldState,
+		BypassUID:  make(map[[16]byte]struct{}),
+		ProxyBook:  map[string]net.Addr{},
+		UsedRandom: map[[32]byte]int64{},
+		WorldState: worldState,
 	}
 	if preParse.CncMode {
 		err = errors.New("command & control mode not implemented")
@@ -195,6 +194,8 @@ func InitState(preParse RawConfig, worldState common.WorldState) (sta *State, er
 			}
 		})
 	}
+
+	sta.RedirDialer = &net.Dialer{Control: dialerControl}
 
 	if preParse.KeepAlive <= 0 {
 		sta.ProxyDialer = &net.Dialer{KeepAlive: -1, Control: dialerControl}
