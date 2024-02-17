@@ -160,10 +160,6 @@ func InitState(preParse RawConfig, worldState common.WorldState) (sta *State, er
 	}
 
 	dialerControl := func(network, address string, c syscall.RawConn) error {
-		if !strings.HasPrefix(network, "tcp") {
-			return nil
-		}
-
 		ips, err := net.LookupHost(strings.Split(address, ":")[0])
 		if err != nil {
 			return err
