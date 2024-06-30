@@ -27,7 +27,7 @@ CGO_ENABLED=0 GOOS="linux" GOARCH="mipsle" GOMIPS="softfloat" go build -ldflags 
 mv ck-client-* ../../release
 popd
 
-os="linux"
+os="windows linux"
 arch="amd64 386 arm arm64"
 pushd cmd/ck-server
 CGO_ENABLED=0 gox -ldflags "-X main.version=${v}" -os="$os" -arch="$arch" -osarch="$osarch" -output="$output"
