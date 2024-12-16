@@ -56,7 +56,7 @@ func randomServerName() string {
 		SOFTWARE.
 	*/
 	charNum := int('z') - int('a') + 1
-	size := 3 + common.RandInt(10)
+	size := 4 + common.RandInt(10)
 	name := make([]byte, size)
 	for i := range name {
 		name[i] = byte(int('a') + common.RandInt(charNum))
@@ -121,7 +121,6 @@ func (tls *DirectTLS) Handshake(rawConn net.Conn, authInfo AuthInfo) (sessionKey
 		sessionId:      payload.ciphertextWithTag[0:32],
 		x25519KeyShare: payload.ciphertextWithTag[32:64],
 		serverName:     authInfo.MockDomain,
-
 	}
 
 	if strings.EqualFold(fields.serverName, "random") {
