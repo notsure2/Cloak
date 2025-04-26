@@ -125,7 +125,7 @@ func readFirstPacket(conn net.Conn, buf []byte, timeout time.Duration) (int, Tra
 
 func dispatchConnection(conn net.Conn, sta *State) {
 	var err error
-	buf := make([]byte, 1500)
+	buf := make([]byte, 2000)
 
 	i, transport, redirOnErr, err := readFirstPacket(conn, buf, 15*time.Second)
 	data := buf[:i]
