@@ -51,7 +51,7 @@ type RemoteConnConfig struct {
 	NumConn          int
 	KeepAlive        time.Duration
 	RemoteAddr       string
-	TransportMaker   func() Transport
+	Transport        TransportConfig
 	TcpSendBuffer    int
 	TcpReceiveBuffer int
 }
@@ -247,10 +247,9 @@ func (raw *RawConfig) ProcessRawConfig(worldState common.WorldState) (local Loca
 			raw.CDNWsUrlPath = "/"
 		}
 
-		remote.TransportMaker = func() Transport {
-			return &WSOverTLS{
-				wsUrl: "ws://" + cdnDomainPort + raw.CDNWsUrlPath,
-			}
+		remote.Transport = TransportConfig{
+			mode:  "cdn",
+			wsUrl: "ws://" + cdnDomainPort + raw.CDNWsUrlPath,
 		}
 	case "direct":
 		fallthrough
@@ -266,10 +265,9 @@ func (raw *RawConfig) ProcessRawConfig(worldState common.WorldState) (local Loca
 		default:
 			browser = chrome
 		}
-		remote.TransportMaker = func() Transport {
-			return &DirectTLS{
-				browser: browser,
-			}
+		remote.Transport = TransportConfig{
+			mode:    "direct",
+			browser: browser,
 		}
 	}
 

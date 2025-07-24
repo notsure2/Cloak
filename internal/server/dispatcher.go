@@ -21,6 +21,8 @@ import (
 
 var b64 = base64.StdEncoding.EncodeToString
 
+const firstPacketSize = 3000
+
 func Serve(l net.Listener, sta *State) {
 	waitDur := [10]time.Duration{
 		50 * time.Millisecond, 100 * time.Millisecond, 300 * time.Millisecond, 500 * time.Millisecond, 1 * time.Second,
@@ -125,7 +127,7 @@ func readFirstPacket(conn net.Conn, buf []byte, timeout time.Duration) (int, Tra
 
 func dispatchConnection(conn net.Conn, sta *State) {
 	var err error
-	buf := make([]byte, 2000)
+	buf := make([]byte, firstPacketSize)
 
 	i, transport, redirOnErr, err := readFirstPacket(conn, buf, 15*time.Second)
 	data := buf[:i]
