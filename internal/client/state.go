@@ -275,7 +275,8 @@ func (raw *RawConfig) ProcessRawConfig(worldState common.WorldState) (local Loca
 	if raw.KeepAlive <= 0 {
 		remote.KeepAlive = -1
 	} else {
-		remote.KeepAlive = remote.KeepAlive * time.Second
+		// Was a bug: multiplied zero-valued remote.KeepAlive, so config KeepAlive was ignored.
+		remote.KeepAlive = time.Duration(raw.KeepAlive) * time.Second
 	}
 
 	if raw.LocalHost == "" {

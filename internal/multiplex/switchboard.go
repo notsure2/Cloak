@@ -2,13 +2,20 @@ package multiplex
 
 import (
 	"errors"
-	"github.com/cbeuw/Cloak/internal/common"
-	log "github.com/sirupsen/logrus"
 	"math/rand/v2"
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
+
+	"github.com/cbeuw/Cloak/internal/common"
+	log "github.com/sirupsen/logrus"
 )
+
+// writeTimeout bounds blocking writes on underlying TLS/TCP conns.
+// Without this, a stalled path (e.g. nested VPN blackhole) blocks forever and
+// freezes the UDP proxy loop — see https://github.com/cbeuw/Cloak/issues/228
+const writeTimeout = 5 * time.Second
 
 type switchboardStrategy int
 
@@ -73,7 +80,9 @@ func (sb *switchboard) send(data []byte, assignedConn *net.Conn) (n int, err err
 		if err != nil {
 			return 0, errBrokenSwitchboard
 		}
+		_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 		n, err = conn.Write(data)
+		_ = conn.SetWriteDeadline(time.Time{})
 		if err != nil {
 			sb.session.SetTerminalMsg("failed to send to remote " + err.Error())
 			sb.session.passiveClose()
@@ -93,7 +102,9 @@ func (sb *switchboard) send(data []byte, assignedConn *net.Conn) (n int, err err
 			}
 			*assignedConn = conn
 		}
+		_ = conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 		n, err = conn.Write(data)
+		_ = conn.SetWriteDeadline(time.Time{})
 		if err != nil {
 			sb.session.SetTerminalMsg("failed to send to remote " + err.Error())
 			sb.session.passiveClose()

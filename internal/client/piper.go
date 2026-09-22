@@ -23,6 +23,28 @@ func RouteUDP(bindFunc func() (*net.UDPConn, error), streamTimeout time.Duration
 	streams := make(map[string]*mux.Stream)
 	var streamsMutex sync.Mutex
 
+	// Tear down multiplexed session + all UDP streams so the next packet rebuilds a fresh path.
+	// Needed when the outer TLS conn stalls (write deadline / blackhole) — see Cloak#228.
+	// Must only be called from the main read/write loop (not from stream reader goroutines).
+	resetSession := func(reason string) {
+		log.Warnf("resetting UDP session: %s", reason)
+		streamsMutex.Lock()
+		oldStreams := streams
+		streams = make(map[string]*mux.Stream)
+		streamsMutex.Unlock()
+
+		for _, st := range oldStreams {
+			if st != nil {
+				_ = st.Close()
+			}
+		}
+		if sesh != nil && !sesh.IsClosed() {
+			sesh.SetTerminalMsg(reason)
+			_ = sesh.Close()
+		}
+		sesh = nil
+	}
+
 	data := make([]byte, 8192)
 	for {
 		i, addr, err := localConn.ReadFrom(data)
@@ -32,6 +54,9 @@ func RouteUDP(bindFunc func() (*net.UDPConn, error), streamTimeout time.Duration
 		}
 
 		if !singleplex && (sesh == nil || sesh.IsClosed()) {
+			if sesh != nil && sesh.IsClosed() {
+				resetSession("session already closed")
+			}
 			sesh = newSeshFunc()
 		}
 
@@ -44,11 +69,13 @@ func RouteUDP(bindFunc func() (*net.UDPConn, error), streamTimeout time.Duration
 
 			stream, err = sesh.OpenStream()
 			if err != nil {
-				if singleplex {
-					sesh.Close()
-				}
 				log.Errorf("Failed to open stream: %v", err)
 				streamsMutex.Unlock()
+				if singleplex {
+					sesh.Close()
+				} else {
+					resetSession("failed to open stream: " + err.Error())
+				}
 				continue
 			}
 			streams[addr.String()] = stream
@@ -57,7 +84,7 @@ func RouteUDP(bindFunc func() (*net.UDPConn, error), streamTimeout time.Duration
 			_ = stream.SetReadDeadline(time.Now().Add(streamTimeout))
 
 			proxyAddr := addr
-			go func(stream *mux.Stream, localConn *net.UDPConn) {
+			go func(stream *mux.Stream, localConn *net.UDPConn, proxyAddr net.Addr) {
 				buf := make([]byte, 8192)
 				for {
 					n, err := stream.Read(buf)
@@ -74,22 +101,24 @@ func RouteUDP(bindFunc func() (*net.UDPConn, error), streamTimeout time.Duration
 					}
 				}
 				streamsMutex.Lock()
-				delete(streams, addr.String())
+				delete(streams, proxyAddr.String())
 				streamsMutex.Unlock()
 				stream.Close()
-				return
-			}(stream, localConn)
+			}(stream, localConn, proxyAddr)
 		} else {
 			streamsMutex.Unlock()
 		}
 
 		_, err = stream.Write(data[:i])
 		if err != nil {
-			log.Tracef("copying proxy client to stream: %v", err)
+			log.Warnf("copying proxy client to stream: %v", err)
 			streamsMutex.Lock()
 			delete(streams, addr.String())
 			streamsMutex.Unlock()
 			stream.Close()
+			if !singleplex {
+				resetSession("write to remote failed: " + err.Error())
+			}
 			continue
 		}
 		_ = stream.SetReadDeadline(time.Now().Add(streamTimeout))
